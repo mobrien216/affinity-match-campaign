@@ -1,0 +1,17 @@
+{
+  "name": "affinity-match-campaign",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Landing page, Stripe webhook receiver, and totals API for the Affinity Funds $10K match campaign",
+  "main": "server.js",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --env-file=.env --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "pg": "^8.13.1",
+    "stripe": "^17.5.0"
+  }
+}
