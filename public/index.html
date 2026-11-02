@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Double your gift to the Affinity Funds | The Cleveland Foundation</title>
+<meta name="description" content="Gifts to the Black Philanthropy Fund, Latino Impacto Fund, and LGBTQ+ Opportunity Fund are matched dollar for dollar, up to $10,000 per fund.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  /* Swap these tokens for values from tcf-design-system.html. Paralucent can replace the heading font if the Adobe kit is available. */
+  :root {
+    --ink: #17212E;
+    --ink-soft: #4A5566;
+    --paper: #FFFFFF;
+    --wash: #F2F4F6;
+    --rule: #D9DEE4;
+    --font-body: "Source Sans 3", "Source Sans Pro", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-head: var(--font-body);
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    font-family: var(--font-body);
+    font-size: 1.0625rem;
+    line-height: 1.5;
+    color: var(--ink);
+    background: var(--paper);
+  }
+  a { color: inherit; }
+  :focus-visible { outline: 3px solid #1A5FB4; outline-offset: 3px; }
+
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+  header.hero { padding: 64px 0 40px; }
+  .hero h1 {
+    font-family: var(--font-head);
+    font-weight: 800;
+    font-size: clamp(2.25rem, 5vw, 3.75rem);
+    line-height: 1.04;
+    letter-spacing: -0.02em;
+    margin: 0 0 20px;
+    max-width: 14ch;
+  }
+  .hero p { font-size: 1.25rem; color: var(--ink-soft); max-width: 58ch; margin: 0; }
+
+  .thanks {
+    display: none;
+    margin: 0 0 32px;
+    padding: 16px 20px;
+    border-left: 6px solid var(--thanks-color, var(--ink));
+    background: var(--wash);
+    font-size: 1.125rem;
+  }
+  .thanks.show { display: block; }
+
+  .funds {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 24px;
+    padding-bottom: 32px;
+  }
+
+  .fund {
+    --fund: var(--ink);
+    display: grid;
+    grid-template-columns: 56px 1fr;
+    gap: 20px;
+    padding: 28px 24px;
+    background: var(--wash);
+    border-top: 6px solid var(--fund);
+  }
+  .fund h2 { font-size: 1.5rem; line-height: 1.15; margin: 0 0 6px; font-weight: 800; }
+  .fund .blurb { margin: 0 0 14px; color: var(--ink-soft); font-size: 1rem; }
+
+  /* Thermometer */
+  .thermo { position: relative; display: flex; flex-direction: column; align-items: center; height: 300px; }
+  .tube {
+    position: relative;
+    width: 22px;
+    flex: 1;
+    background: var(--paper);
+    border: 2px solid var(--fund);
+    border-bottom: 0;
+    border-radius: 11px 11px 0 0;
+    overflow: hidden;
+  }
+  .fill {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    height: 0%;
+    background: var(--fund);
+    transition: height 1.4s cubic-bezier(.2,.8,.2,1);
+  }
+  .bulb {
+    width: 48px; height: 48px; margin-top: -4px;
+    border-radius: 50%;
+    background: var(--fund);
+    border: 2px solid var(--fund);
+  }
+  .goal-tick {
+    position: absolute; top: 2px; right: -4px;
+    transform: translateX(100%);
+    font-size: .8125rem; font-weight: 600; color: var(--ink-soft);
+    white-space: nowrap;
+  }
+  .fund.over .tube { box-shadow: 0 0 0 4px color-mix(in srgb, var(--fund) 22%, transparent); }
+
+  .raised { font-size: 2.5rem; font-weight: 800; line-height: 1; margin: 10px 0 4px; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+  .of { margin: 0 0 14px; color: var(--ink-soft); }
+  .status { margin: 0 0 6px; font-weight: 600; }
+  .impact { margin: 0 0 18px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+  .match-note { margin: -10px 0 18px; font-size: .9375rem; color: var(--ink-soft); }
+
+  .give {
+    display: inline-block;
+    padding: 12px 22px;
+    background: var(--fund);
+    color: #fff;
+    font-weight: 700;
+    text-decoration: none;
+    border-radius: 4px;
+  }
+  .give:hover { filter: brightness(1.1); }
+  .give[aria-disabled="true"] { opacity: .5; pointer-events: none; }
+
+  .meta { padding: 8px 0 64px; color: var(--ink-soft); font-size: .9375rem; }
+  .notice { color: #8A1C1C; font-weight: 600; }
+
+  @media (max-width: 420px) {
+    .fund { grid-template-columns: 44px 1fr; gap: 16px; padding: 24px 18px; }
+    .thermo { height: 240px; }
+    .goal-tick { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { .fill { transition: none; } }
+</style>
+</head>
+<body>
+<main>
+  <header class="hero wrap">
+    <h1>Double your gift to the Affinity Funds</h1>
+    <p>Every dollar given to the funds below is matched dollar for dollar, up to $10,000 per fund. Choose a fund to help it reach the full match.</p>
+  </header>
+
+  <div class="wrap">
+    <div class="thanks" id="thanks" role="status" aria-live="polite"></div>
+    <section class="funds" id="funds" aria-label="Fund progress">
+      <p>Loading fund totals…</p>
+    </section>
+    <p class="meta" id="meta" aria-live="polite"></p>
+  </div>
+</main>
+
+<script>
+(() => {
+  const POLL_MS = 30000;
+  const FAST_POLL_MS = 5000;
+  const FAST_POLL_FOR_MS = 60000;
+
+  const fundsEl = document.getElementById('funds');
+  const metaEl = document.getElementById('meta');
+  const thanksEl = document.getElementById('thanks');
+
+  const params = new URLSearchParams(location.search);
+  const thanksFund = params.get('thanks');
+  let fastUntil = thanksFund ? Date.now() + FAST_POLL_FOR_MS : 0;
+  let lastData = null;
+  let timer = null;
+
+  // Floor, never round up: the page should never overstate what's been raised.
+  const dollars = (cents) => '$' + Math.floor(cents / 100).toLocaleString('en-US');
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  function cardHtml(f, goal, ended) {
+    const pct = Math.min(100, (f.raised_cents / goal) * 100);
+    const over = f.over_goal_cents > 0;
+    const toGo = Math.max(0, goal - f.raised_cents);
+
+    let status;
+    if (over) status = `Goal reached, plus ${dollars(f.over_goal_cents)} beyond it`;
+    else if (toGo === 0) status = 'Goal reached';
+    else status = `${dollars(toGo)} to go to unlock the full match`;
+
+    return `
+      <article class="fund${over ? ' over' : ''}" style="--fund:${escapeHtml(f.color)}" id="${escapeHtml(f.id)}">
+        <div class="thermo" role="progressbar" aria-label="${escapeHtml(f.name)} progress toward ${dollars(goal)}"
+             aria-valuemin="0" aria-valuemax="${goal / 100}" aria-valuenow="${Math.min(f.raised_cents, goal) / 100}"
+             aria-valuetext="${dollars(f.raised_cents)} raised of ${dollars(goal)} goal">
+          <div class="tube"><div class="fill" data-pct="${pct.toFixed(2)}"></div></div>
+          <div class="bulb"></div>
+          <span class="goal-tick" aria-hidden="true">${dollars(goal)}</span>
+        </div>
+        <div>
+          <h2>${escapeHtml(f.name)}</h2>
+          ${f.blurb ? `<p class="blurb">${escapeHtml(f.blurb)}</p>` : ''}
+          <p class="raised">${dollars(f.raised_cents)}</p>
+          <p class="of">raised toward the ${dollars(goal)} match goal</p>
+          <p class="status">${status}</p>
+          <p class="impact">${dollars(f.total_with_match_cents)} total with the match</p>
+          ${over ? `<p class="match-note">The first ${dollars(goal)} raised for this fund is matched.</p>` : ''}
+          ${f.give_url
+            ? `<a class="give" href="${escapeHtml(f.give_url)}">Give to the ${escapeHtml(f.name)}</a>`
+            : `<a class="give" aria-disabled="true">Giving link coming soon</a>`}
+        </div>
+      </article>`;
+  }
+
+  function render(data) {
+    const goal = data.campaign.goal_cents;
+    const prevPct = {};
+    fundsEl.querySelectorAll('.fund').forEach((el) => {
+      const fill = el.querySelector('.fill');
+      prevPct[el.id] = fill ? fill.style.height : '0%';
+    });
+
+    fundsEl.innerHTML = data.funds.map((f) => cardHtml(f, goal, data.campaign.ended)).join('');
+
+    // Start each bar where it was, then animate to the new height.
+    fundsEl.querySelectorAll('.fund').forEach((el) => {
+      const fill = el.querySelector('.fill');
+      fill.style.height = prevPct[el.id] || '0%';
+      requestAnimationFrame(() => requestAnimationFrame(() => { fill.style.height = fill.dataset.pct + '%'; }));
+    });
+
+    if (thanksFund) {
+      const f = data.funds.find((x) => x.id === thanksFund);
+      if (f) {
+        thanksEl.style.setProperty('--thanks-color', f.color);
+        thanksEl.textContent = `Thank you for your gift to the ${f.name}. It will appear in the total within a minute.`;
+        thanksEl.classList.add('show');
+      }
+    }
+
+    const updated = new Date(data.updated_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    let meta = `Totals updated ${updated}.`;
+    if (!data.campaign.livemode) meta += ' Test mode: these are not real gifts.';
+    if (data.campaign.ended) meta = 'The match campaign has ended. Thank you to everyone who gave. ' + meta;
+    metaEl.textContent = meta;
+  }
+
+  async function load() {
+    try {
+      const res = await fetch('/api/totals', { cache: 'no-store' });
+      if (!res.ok) throw new Error(res.status);
+      lastData = await res.json();
+      render(lastData);
+    } catch (err) {
+      if (!lastData) {
+        fundsEl.innerHTML = '<p class="notice">Fund totals could not be loaded. Refresh the page to try again.</p>';
+      } else {
+        metaEl.innerHTML = '<span class="notice">Totals are not updating right now. Giving links still work.</span>';
+      }
+    } finally {
+      schedule();
+    }
+  }
+
+  function schedule() {
+    clearTimeout(timer);
+    if (document.hidden) return;
+    timer = setTimeout(load, Date.now() < fastUntil ? FAST_POLL_MS : POLL_MS);
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) clearTimeout(timer);
+    else load();
+  });
+
+  load();
+})();
+</script>
+</body>
+</html>
