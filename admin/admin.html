@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Match campaign admin</title>
+<style>
+  :root { --ink:#17212E; --soft:#4A5566; --wash:#F2F4F6; --rule:#D9DEE4; --accent:#1A5FB4; --bad:#8A1C1C; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:"Source Sans 3", system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--ink); line-height:1.45; }
+  main { max-width: 980px; margin: 0 auto; padding: 32px 24px 64px; }
+  h1 { margin: 0 0 4px; font-size: 1.75rem; }
+  .mode { color: var(--soft); margin: 0 0 28px; }
+  form { display:grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap:14px; padding:20px; background:var(--wash); align-items:end; }
+  label { display:flex; flex-direction:column; gap:4px; font-weight:600; font-size:.9375rem; }
+  input, select { font:inherit; padding:8px 10px; border:1px solid var(--rule); border-radius:4px; background:#fff; }
+  button { font:inherit; font-weight:700; padding:9px 16px; border:0; border-radius:4px; background:var(--accent); color:#fff; cursor:pointer; }
+  button.link { background:none; color:var(--bad); padding:0; font-weight:600; text-decoration:underline; }
+  :focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+  .hint { grid-column:1/-1; margin:0; color:var(--soft); font-size:.9375rem; }
+  #msg { min-height:1.5em; margin:12px 0 24px; font-weight:600; }
+  #msg.err { color:var(--bad); }
+  .table-wrap { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:.9375rem; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--rule); white-space:nowrap; }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  tr.inactive td { color:var(--soft); text-decoration:line-through; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Match campaign admin</h1>
+  <p class="mode" id="mode">Loading…</p>
+
+  <form id="form">
+    <label>Fund
+      <select name="fund_id" id="fund" required></select>
+    </label>
+    <label>Amount (USD)
+      <input name="amount" type="number" min="0.01" step="0.01" inputmode="decimal" required>
+    </label>
+    <label>Gift date
+      <input name="gift_date" type="date" required id="date">
+    </label>
+    <label>Reference
+      <input name="note" maxlength="200" placeholder="Check # or batch #">
+    </label>
+    <label>Entered by
+      <input name="entered_by" maxlength="80" required placeholder="Your initials">
+    </label>
+    <button type="submit">Add gift</button>
+    <p class="hint">Manual gifts count toward the bar only if the gift date falls inside the campaign window. Don't enter donor names or account details here; use a check or batch number.</p>
+  </form>
+  <p id="msg" role="status" aria-live="polite"></p>
+
+  <h2>Recent gifts</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Date</th><th>Fund</th><th class="num">Amount</th><th class="num">Refunded</th><th>Source</th><th>Status</th><th>Reference</th><th>Entered by</th><th></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</main>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const money = (c) => '$' + (c / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  let fundNames = {};
+
+  $('date').valueAsDate = new Date();
+
+  function say(text, isErr) { $('msg').textContent = text; $('msg').className = isErr ? 'err' : ''; }
+
+  async function load() {
+    const res = await fetch('/admin/api/gifts', { cache: 'no-store' });
+    if (!res.ok) return say('Could not load gifts. Refresh to try again.', true);
+    const data = await res.json();
+
+    if (!$('fund').options.length) {
+      $('fund').innerHTML = data.funds.map((f) => `<option value="${esc(f.id)}">${esc(f.name)}</option>`).join('');
+    }
+    fundNames = Object.fromEntries(data.funds.map((f) => [f.id, f.name]));
+
+    const start = new Date(data.campaign.start).toLocaleDateString('en-US');
+    const end = data.campaign.end ? new Date(data.campaign.end).toLocaleDateString('en-US') : 'no end date set';
+    $('mode').textContent = `${data.campaign.livemode ? 'Live mode' : 'Test mode'}. Campaign window: ${start} to ${end}.`;
+
+    $('rows').innerHTML = data.gifts.map((g) => {
+      const inactive = g.status !== 'paid' || g.refunded_cents >= g.amount_cents;
+      return `<tr class="${inactive ? 'inactive' : ''}">
+        <td>${new Date(g.gift_date).toLocaleDateString('en-US')}</td>
+        <td>${esc(fundNames[g.fund_id] || g.fund_id)}</td>
+        <td class="num">${money(g.amount_cents)}</td>
+        <td class="num">${g.refunded_cents ? money(g.refunded_cents) : ''}</td>
+        <td>${g.source === 'manual' ? 'Manual' : 'Stripe'}</td>
+        <td>${esc(g.status)}</td>
+        <td>${esc(g.note)}</td>
+        <td>${esc(g.entered_by)}</td>
+        <td>${g.source === 'manual' && g.status === 'paid' ? `<button class="link" data-void="${g.id}">Void</button>` : ''}</td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="9">No gifts yet.</td></tr>';
+  }
+
+  $('form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const body = Object.fromEntries(new FormData(e.target));
+    // Noon local time avoids the date shifting a day when converted to UTC.
+    body.gift_date = body.gift_date + 'T12:00:00';
+    const res = await fetch('/admin/api/gifts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) return say(out.error || 'Gift was not added.', true);
+    say(`Added ${money(Math.round(Number(body.amount) * 100))} to the ${fundNames[body.fund_id]}.`);
+    e.target.amount.value = '';
+    e.target.note.value = '';
+    load();
+  });
+
+  $('rows').addEventListener('click', async (e) => {
+    const id = e.target.dataset.void;
+    if (!id || !confirm('Void this manual gift? It will no longer count toward the total.')) return;
+    const res = await fetch(`/admin/api/gifts/${id}/void`, { method: 'POST' });
+    if (!res.ok) return say('Gift was not voided.', true);
+    say('Gift voided.');
+    load();
+  });
+
+  load();
+})();
+</script>
+</body>
+</html>
