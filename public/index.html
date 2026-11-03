@@ -33,7 +33,6 @@
   --logo:url('/tcf-logo.png');
 }
 @media (prefers-reduced-motion: reduce){ :root{ --t-fast:0ms; --t-fill:0ms; } }
-@media (max-width:640px){ .fund-card h2{min-height:0} }
 
 /* Paralucent is licensed and self-hosted. Put the font files in public/fonts/; until then Aptos/system fonts are used. */
 @font-face{font-family:'Paralucent';src:url('fonts/paralucent-bold.woff2') format('woff2'),url('fonts/paralucent-bold.woff') format('woff');font-weight:600 900;font-style:normal;font-display:swap}
@@ -67,8 +66,8 @@ a{color:inherit}
 
 /* Fund cards: G8 pillar-card pattern with the affinity fund-type color as the 3px top edge */
 .funds{display:grid;gap:var(--space-4);grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));margin-top:var(--space-7)}
-.fund-card{display:flex;flex-direction:column;padding:22px;border:1px solid var(--gray3);border-top:3px solid var(--ft-affinity);border-radius:var(--r);background:var(--white)}
-.fund-card h2{font-size:var(--fs-h3);line-height:1.15;margin-top:10px;min-height:2.3em} /* two lines, so bars line up across cards */
+.fund-card{--fund:var(--ft-affinity);display:flex;flex-direction:column;padding:22px;border:1px solid var(--gray3);border-top:4px solid var(--fund);border-radius:var(--r);background:var(--white)}
+.fund-card h2{font-size:var(--fs-h3);line-height:1.15;margin-top:10px} /* heights are equalized in JS so bars line up */
 .fund-card .blurb{margin-top:var(--space-3);font-size:16px;line-height:1.45}
 
 .figure{display:flex;flex-direction:column;gap:6px;margin-top:var(--space-5)} /* goal sits under the figure on every card, so bars align */
@@ -77,7 +76,7 @@ a{color:inherit}
 
 /* Progress bar: same anatomy as the library's flow-track, taller for a fundraising goal */
 .track{height:12px;margin-top:var(--space-3);border-radius:6px;background:var(--gray3);overflow:hidden}
-.track i{display:block;height:100%;width:0;border-radius:6px;background:var(--ft-affinity);transition:width var(--t-fill) var(--ease)}
+.track i{display:block;height:100%;width:0;border-radius:6px;background:var(--fund);transition:width var(--t-fill) var(--ease)}
 .fund-card.reached .track i{background:var(--mid)}
 
 .status{margin-top:var(--space-3);font-weight:700;line-height:1.45}
@@ -152,7 +151,7 @@ a{color:inherit}
     else status = `${dollars(toGo)} to go to unlock the full match`;
 
     return `
-      <article class="fund-card${reached ? ' reached' : ''}" id="${escapeHtml(f.id)}">
+      <article class="fund-card${reached ? ' reached' : ''}" id="${escapeHtml(f.id)}"${/^#[0-9a-fA-F]{6}$/.test(f.color || '') ? ` style="--fund:${f.color}"` : ''}>
         <p class="t-sub">Affinity Fund</p>
         <h2>${escapeHtml(f.name)}</h2>
         ${f.blurb ? `<p class="blurb">${escapeHtml(f.blurb)}</p>` : ''}
@@ -192,6 +191,8 @@ a{color:inherit}
       requestAnimationFrame(() => requestAnimationFrame(() => { fill.style.width = fill.dataset.pct + '%'; }));
     });
 
+    equalizeHeadings();
+
     if (thanksFund) {
       const f = data.funds.find((x) => x.id === thanksFund);
       if (f) {
@@ -223,6 +224,19 @@ a{color:inherit}
       schedule();
     }
   }
+
+  // Make fund names the same height on wide screens so the figures and bars line up.
+  function equalizeHeadings() {
+    const heads = [...fundsEl.querySelectorAll('.fund-card h2')];
+    heads.forEach((h) => { h.style.minHeight = ''; });
+    const tops = new Set(heads.map((h) => h.getBoundingClientRect().top));
+    if (heads.length < 2 || tops.size > 1) return; // cards are stacked; no need
+    const max = Math.max(...heads.map((h) => h.offsetHeight));
+    heads.forEach((h) => { h.style.minHeight = max + 'px'; });
+  }
+  let resizeT;
+  window.addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(equalizeHeadings, 150); });
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(equalizeHeadings);
 
   function schedule() {
     clearTimeout(timer);
