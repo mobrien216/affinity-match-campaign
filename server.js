@@ -32,6 +32,8 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false,
 });
+// An idle connection dropping (e.g. a Render Postgres restart) emits 'error'; unhandled, it would crash the process.
+pool.on('error', (err) => console.error('Idle database connection error:', err.message));
 
 // ---------- Schema (idempotent, runs on boot) ----------
 // No donor names, emails, or card data are stored. Stripe remains the system of record for donors.
@@ -59,6 +61,16 @@ CREATE TABLE IF NOT EXISTS stripe_events (
   type        TEXT NOT NULL,
   received_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Refunds and lost disputes, keyed by PaymentIntent. Stripe can deliver these before the checkout
+-- event that creates the gift, so they're kept here and applied whenever the gift row is written.
+-- Rows for charges outside the campaign never match a gift and are harmless.
+CREATE TABLE IF NOT EXISTS stripe_adjustments (
+  payment_intent TEXT PRIMARY KEY,
+  refunded_cents INTEGER NOT NULL DEFAULT 0,
+  disputed_lost  BOOLEAN NOT NULL DEFAULT false,
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 `;
 
 // ---------- Totals cache ----------
@@ -84,8 +96,9 @@ app.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async (r
     return res.json({ received: true, ignored: 'mode mismatch' });
   }
 
-  const client = await pool.connect();
+  let client;
   try {
+    client = await pool.connect();
     await client.query('BEGIN');
     // Idempotency: Stripe retries and may deliver the same event more than once.
     const fresh = await client.query(
@@ -101,12 +114,12 @@ app.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async (r
     invalidateTotals();
     res.json({ received: true });
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
+    if (client) await client.query('ROLLBACK').catch(() => {});
     console.error(`Error processing ${event.type} ${event.id}:`, err);
     // 500 tells Stripe to retry later; the event row was rolled back so the retry is processed fresh.
     res.status(500).send('Processing error');
   } finally {
-    client.release();
+    if (client) client.release();
   }
 });
 
@@ -123,19 +136,12 @@ async function handleEvent(db, event) {
     case 'charge.refunded':
       // amount_refunded is cumulative, so partial and repeat refunds are handled correctly.
       if (!obj.payment_intent) return;
-      return db.query(
-        `UPDATE gifts SET refunded_cents = LEAST($1, amount_cents), updated_at = now()
-         WHERE stripe_payment_intent = $2`,
-        [obj.amount_refunded, obj.payment_intent]
-      );
+      return recordAdjustment(db, obj.payment_intent, { refundedCents: obj.amount_refunded });
 
     case 'charge.dispute.closed':
       // Only subtract when the dispute is lost. Open or won disputes keep counting.
       if (obj.status !== 'lost' || !obj.payment_intent) return;
-      return db.query(
-        `UPDATE gifts SET status = 'disputed_lost', updated_at = now() WHERE stripe_payment_intent = $1`,
-        [obj.payment_intent]
-      );
+      return recordAdjustment(db, obj.payment_intent, { disputedLost: true });
 
     default:
       return; // Not an event we track.
@@ -168,6 +174,34 @@ async function upsertSession(db, session, eventCreated, forcedStatus) {
        stripe_payment_intent = COALESCE(gifts.stripe_payment_intent, EXCLUDED.stripe_payment_intent),
        updated_at = now()`,
     [fund.id, session.amount_total, status, session.livemode, session.id, session.payment_intent || null, eventCreated]
+  );
+  // A refund or lost dispute may have arrived before this gift existed.
+  if (session.payment_intent) await applyAdjustments(db, session.payment_intent);
+}
+
+async function recordAdjustment(db, paymentIntent, { refundedCents = 0, disputedLost = false }) {
+  // GREATEST: amount_refunded is cumulative, so an older refund event arriving late can't lower it.
+  await db.query(
+    `INSERT INTO stripe_adjustments (payment_intent, refunded_cents, disputed_lost)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (payment_intent) DO UPDATE SET
+       refunded_cents = GREATEST(stripe_adjustments.refunded_cents, EXCLUDED.refunded_cents),
+       disputed_lost = stripe_adjustments.disputed_lost OR EXCLUDED.disputed_lost,
+       updated_at = now()`,
+    [paymentIntent, refundedCents, disputedLost]
+  );
+  await applyAdjustments(db, paymentIntent);
+}
+
+function applyAdjustments(db, paymentIntent) {
+  return db.query(
+    `UPDATE gifts g SET
+       refunded_cents = GREATEST(g.refunded_cents, LEAST(a.refunded_cents, g.amount_cents)),
+       status = CASE WHEN a.disputed_lost THEN 'disputed_lost' ELSE g.status END,
+       updated_at = now()
+     FROM stripe_adjustments a
+     WHERE a.payment_intent = $1 AND g.stripe_payment_intent = a.payment_intent`,
+    [paymentIntent]
   );
 }
 
@@ -256,10 +290,25 @@ function requireAdmin(req, res, next) {
   res.status(401).send('Authentication required');
 }
 
-app.use('/admin', requireAdmin);
+// Browsers resend Basic Auth on cross-site form posts, so admin writes must carry a header that only
+// the admin page's own fetch calls send (a cross-site page can't add one without a CORS preflight,
+// which this server never approves). The admin page also refuses to be framed, to prevent clickjacking.
+function adminGuard(req, res, next) {
+  res.set('X-Frame-Options', 'DENY');
+  res.set('Content-Security-Policy', "frame-ancestors 'none'");
+  if (req.method !== 'GET' && req.method !== 'HEAD' && req.get('x-requested-with') !== 'fetch') {
+    return res.status(403).json({ error: 'Request blocked.' });
+  }
+  next();
+}
+
+// Express 4 doesn't catch rejected promises; without this a database error would crash the process.
+const asyncRoute = (fn) => (req, res, next) => fn(req, res).catch(next);
+
+app.use('/admin', requireAdmin, adminGuard);
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'admin', 'admin.html')));
 
-app.get('/admin/api/gifts', async (req, res) => {
+app.get('/admin/api/gifts', asyncRoute(async (req, res) => {
   const { rows } = await pool.query(
     `SELECT id, source, fund_id, amount_cents, refunded_cents, status, gift_date, note, entered_by
      FROM gifts WHERE livemode = $1 ORDER BY gift_date DESC, id DESC LIMIT 300`,
@@ -270,9 +319,9 @@ app.get('/admin/api/gifts', async (req, res) => {
     campaign: { start: CAMPAIGN_START.toISOString(), end: CAMPAIGN_END ? CAMPAIGN_END.toISOString() : null, livemode: LIVEMODE },
     gifts: rows,
   });
-});
+}));
 
-app.post('/admin/api/gifts', express.json({ limit: '10kb' }), async (req, res) => {
+app.post('/admin/api/gifts', express.json({ limit: '10kb' }), asyncRoute(async (req, res) => {
   const { fund_id, amount, gift_date, note, entered_by } = req.body || {};
   if (!fundById(fund_id)) return res.status(400).json({ error: 'Choose a fund.' });
 
@@ -291,21 +340,32 @@ app.post('/admin/api/gifts', express.json({ limit: '10kb' }), async (req, res) =
   );
   invalidateTotals();
   res.status(201).json({ id: rows[0].id });
-});
+}));
 
-app.post('/admin/api/gifts/:id/void', async (req, res) => {
+app.post('/admin/api/gifts/:id/void', asyncRoute(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0 || id > 2147483647) {
+    return res.status(404).json({ error: 'Manual gift not found or already voided.' });
+  }
   const { rowCount } = await pool.query(
     `UPDATE gifts SET status = 'voided', updated_at = now()
      WHERE id = $1 AND source = 'manual' AND livemode = $2 AND status = 'paid'`,
-    [parseInt(req.params.id, 10), LIVEMODE]
+    [id, LIVEMODE]
   );
   if (!rowCount) return res.status(404).json({ error: 'Manual gift not found or already voided.' });
   invalidateTotals();
   res.json({ ok: true });
-});
+}));
 
 // ---------- Landing page ----------
 app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
+
+// Log the details; never send a stack trace to the browser.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  console.error(`${req.method} ${req.path} failed:`, err);
+  res.status(err.status || 500).json({ error: 'Something went wrong. Try again.' });
+});
 
 // ---------- Boot ----------
 (async () => {
