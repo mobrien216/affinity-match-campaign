@@ -8,7 +8,7 @@ const FUNDS = [
     id: 'fund_a',
     name: 'Black Philanthropy Fund',
     accountId: '452023',
-    color: '#4B3B8F',
+    color: '#EE7331', // TCF Orange
     blurb: '',
     linkId: process.env.FUND_A_LINK_ID || null,
     giveUrl: process.env.FUND_A_LINK_URL || null,
@@ -17,7 +17,7 @@ const FUNDS = [
     id: 'fund_b',
     name: 'Latino Impacto Fund',
     accountId: '454778',
-    color: '#B2452B',
+    color: '#1A8DA9', // TCF Blue
     blurb: '',
     linkId: process.env.FUND_B_LINK_ID || null,
     giveUrl: process.env.FUND_B_LINK_URL || null,
@@ -26,7 +26,7 @@ const FUNDS = [
     id: 'fund_c',
     name: 'LGBTQ+ Opportunity Fund',
     accountId: '452022',
-    color: '#1C6E78',
+    color: '#C0629A', // TCF Pink (affinity fund-type color)
     blurb: '',
     linkId: process.env.FUND_C_LINK_ID || null,
     giveUrl: process.env.FUND_C_LINK_URL || null,
