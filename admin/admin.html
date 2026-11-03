@@ -4,71 +4,172 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>Match campaign admin</title>
+<title>Match campaign admin | The Cleveland Foundation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&display=swap" rel="stylesheet">
 <style>
-  :root { --ink:#17212E; --soft:#4A5566; --wash:#F2F4F6; --rule:#D9DEE4; --accent:#1A5FB4; --bad:#8A1C1C; }
-  * { box-sizing: border-box; }
-  body { margin:0; font-family:"Source Sans 3", system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--ink); line-height:1.45; }
-  main { max-width: 980px; margin: 0 auto; padding: 32px 24px 64px; }
-  h1 { margin: 0 0 4px; font-size: 1.75rem; }
-  .mode { color: var(--soft); margin: 0 0 28px; }
-  form { display:grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap:14px; padding:20px; background:var(--wash); align-items:end; }
-  label { display:flex; flex-direction:column; gap:4px; font-weight:600; font-size:.9375rem; }
-  input, select { font:inherit; padding:8px 10px; border:1px solid var(--rule); border-radius:4px; background:#fff; }
-  button { font:inherit; font-weight:700; padding:9px 16px; border:0; border-radius:4px; background:var(--accent); color:#fff; cursor:pointer; }
-  button:disabled { opacity:.6; cursor:wait; }
-  button.link { background:none; color:var(--bad); padding:0; font-weight:600; text-decoration:underline; }
-  :focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
-  .hint { grid-column:1/-1; margin:0; color:var(--soft); font-size:.9375rem; }
-  #msg { min-height:1.5em; margin:12px 0 24px; font-weight:600; }
-  #msg.err { color:var(--bad); }
-  .table-wrap { overflow-x:auto; }
-  table { width:100%; border-collapse:collapse; font-size:.9375rem; }
-  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--rule); white-space:nowrap; }
-  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
-  tr.inactive td { color:var(--soft); text-decoration:line-through; }
+/* Same TCF tokens as the public page (public/index.html), plus a red for errors and destructive actions. */
+:root{
+  --green:#164430; --mid:#086C43; --orange:#EE7331; --pink:#C0629A; --red:#CB1E4B;
+  --white:#FFFFFF; --gray1:#F3F2F0; --gray2:#E8EAE5; --gray3:#DEE2DB;
+  --label:#4F7A63;
+
+  --head:'Paralucent','Aptos',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --body:'Source Sans 3','Source Sans Pro','Aptos',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --fs-h1:clamp(32px,26px + 1.5vw,44px);
+  --fs-h2:clamp(22px,20.25px + .449vw,26px);
+  --fs-body:16px;
+  --fs-caption:14px;
+
+  --space-2:8px; --space-3:12px; --space-4:16px; --space-5:24px; --space-6:32px; --space-7:48px;
+  --gutter:clamp(20px,4.5vw,56px); --max:1180px;
+  --r:4px; --r-btn:6px;
+  --focus:0 0 0 2px var(--white),0 0 0 4px var(--orange);
+  --ease:cubic-bezier(.2,.8,.2,1); --t-fast:150ms;
+
+  --logo:url('/tcf-logo.png');
+}
+@media (prefers-reduced-motion: reduce){ :root{ --t-fast:0ms; } }
+@font-face{font-family:'Paralucent';src:url('/fonts/paralucent-bold.woff2') format('woff2'),url('/fonts/paralucent-bold.woff') format('woff');font-weight:600 900;font-style:normal;font-display:swap}
+
+*{box-sizing:border-box}
+body{margin:0;font-family:var(--body);font-size:var(--fs-body);line-height:1.5;color:var(--green);background:var(--gray1);-webkit-font-smoothing:antialiased}
+h1,h2,h3{font-family:var(--head);font-weight:700;margin:0;letter-spacing:-.01em}
+p{margin:0}
+:focus-visible{outline:none;box-shadow:var(--focus)}
+.wrap{max-width:var(--max);margin:0 auto;padding:0 var(--gutter)}
+
+.brand-logo{display:block;aspect-ratio:800/257;height:32px;background:var(--white);-webkit-mask:var(--logo) no-repeat left center/contain;mask:var(--logo) no-repeat left center/contain}
+.t-sub{font-weight:600;font-size:13px;line-height:1.3;letter-spacing:.12em;text-transform:uppercase;color:var(--label)}
+
+/* Header on Green */
+.top{background:var(--green);color:var(--white);padding:var(--space-5) 0 var(--space-6)}
+.top .brand-logo{margin-bottom:var(--space-6)}
+.top .t-sub{color:var(--gray2)}
+.top h1{font-size:var(--fs-h1);line-height:1.05;margin-top:10px}
+.mode{margin-top:var(--space-3);color:var(--gray2)}
+.mode .pill{display:inline-block;margin-right:8px;padding:2px 10px;border-radius:999px;font-weight:700;font-size:13px;letter-spacing:.04em;text-transform:uppercase;background:var(--orange);color:var(--green)}
+.mode .pill.live{background:var(--white)}
+
+/* Sections as white panels */
+.panel{margin-top:var(--space-6);padding:var(--space-5);background:var(--white);border:1px solid var(--gray3);border-radius:var(--r)}
+.panel h2{font-size:var(--fs-h2);line-height:1.15}
+.panel > .lede{margin-top:6px;color:var(--label);max-width:72ch}
+main{padding-bottom:var(--space-7)}
+
+/* Fund settings: one card per fund, fund color as the top edge (same as the public cards) */
+.fund-grid{display:grid;gap:var(--space-4);grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));margin-top:var(--space-5)}
+.fund-set{--fund:var(--pink);display:flex;flex-direction:column;gap:var(--space-4);padding:20px;border:1px solid var(--gray3);border-top:4px solid var(--fund);border-radius:var(--r)}
+.fund-set h3{font-size:20px;line-height:1.2}
+.fund-set .row{display:flex;gap:var(--space-3);align-items:flex-end}
+.fund-set .row label{flex:1}
+.fund-set .msg{min-height:1.45em;font-size:var(--fs-caption);font-weight:600}
+
+/* Switch: a checkbox with role="switch" */
+.switch{flex-direction:row;align-items:center;justify-content:space-between;gap:var(--space-3);cursor:pointer}
+.switch input{appearance:none;-webkit-appearance:none;flex:none;position:relative;width:48px;height:28px;min-height:0;margin:0;padding:0;border:0;border-radius:999px;background:var(--gray3);cursor:pointer;transition:background-color var(--t-fast) var(--ease)}
+.switch input::after{content:'';position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:var(--white);box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform var(--t-fast) var(--ease)}
+.switch input:checked{background:var(--mid)}
+.switch input:checked::after{transform:translateX(20px)}
+.switch input:disabled{opacity:.6;cursor:wait}
+.switch .state{display:block;font-weight:400;font-size:var(--fs-caption);color:var(--label)}
+
+/* Forms */
+label{display:flex;flex-direction:column;gap:6px;font-weight:600;font-size:15px}
+input,select{font:inherit;font-weight:400;color:var(--green);min-height:44px;padding:8px 12px;border:1.5px solid var(--gray3);border-radius:var(--r);background:var(--white)}
+input:focus-visible,select:focus-visible{border-color:var(--mid)}
+.money{position:relative;display:block}
+.money::before{content:'$';position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--label)}
+.money input{width:100%;padding-left:24px}
+.gift-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:var(--space-4);align-items:end;margin-top:var(--space-5)}
+.hint{grid-column:1/-1;font-size:var(--fs-caption);color:var(--label)}
+
+/* Buttons (library .btn .btn-primary) */
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 20px;border:1.5px solid transparent;border-radius:var(--r-btn);font-family:var(--body);font-weight:700;font-size:16px;line-height:1.2;cursor:pointer;transition:background-color var(--t-fast) var(--ease),border-color var(--t-fast) var(--ease)}
+.btn-primary{background:var(--green);border-color:var(--green);color:var(--white)}
+.btn-primary:hover{background:var(--mid);border-color:var(--mid)}
+.btn-secondary{background:var(--white);border-color:var(--green);color:var(--green)}
+.btn-secondary:hover{background:var(--gray1)}
+.btn:disabled{opacity:.6;cursor:wait}
+.link-danger{background:none;border:0;padding:0;font:inherit;font-weight:600;color:var(--red);text-decoration:underline;cursor:pointer}
+
+#msg{min-height:1.5em;margin-top:var(--space-3);font-weight:600}
+.err{color:var(--red)}
+.ok{color:var(--mid)}
+
+/* Gifts table */
+.table-wrap{overflow-x:auto;margin-top:var(--space-4)}
+table{width:100%;border-collapse:collapse;font-size:15px}
+th{font-weight:600;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--label);text-align:left;padding:10px;border-bottom:2px solid var(--gray3);white-space:nowrap}
+td{padding:10px;border-bottom:1px solid var(--gray2);white-space:nowrap}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+tr.inactive td{color:var(--label);text-decoration:line-through}
+.dot{display:inline-block;width:10px;height:10px;margin-right:8px;border-radius:50%;background:var(--fund,var(--pink));vertical-align:baseline}
 </style>
 </head>
 <body>
-<main>
-  <h1>Match campaign admin</h1>
-  <p class="mode" id="mode">Loading…</p>
-
-  <form id="form">
-    <label>Fund
-      <select name="fund_id" id="fund" required></select>
-    </label>
-    <label>Amount (USD)
-      <input name="amount" type="number" min="0.01" step="0.01" inputmode="decimal" required>
-    </label>
-    <label>Gift date
-      <input name="gift_date" type="date" required id="date">
-    </label>
-    <label>Reference
-      <input name="note" maxlength="200" placeholder="Check # or batch #">
-    </label>
-    <label>Entered by
-      <input name="entered_by" maxlength="80" required placeholder="Your initials">
-    </label>
-    <button type="submit">Add gift</button>
-    <p class="hint">Manual gifts count toward the bar only if the gift date falls inside the campaign window. Don't enter donor names or account details here; use a check or batch number.</p>
-  </form>
-  <p id="msg" role="status" aria-live="polite"></p>
-
-  <h2>Recent gifts</h2>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Date</th><th>Fund</th><th class="num">Amount</th><th class="num">Refunded</th><th>Source</th><th>Status</th><th>Reference</th><th>Entered by</th><th></th></tr></thead>
-      <tbody id="rows"></tbody>
-    </table>
+<header class="top">
+  <div class="wrap">
+    <span class="brand-logo" role="img" aria-label="The Cleveland Foundation"></span>
+    <p class="t-sub">Affinity Funds match</p>
+    <h1>Campaign admin</h1>
+    <p class="mode" id="mode">Loading…</p>
   </div>
+</header>
+
+<main class="wrap">
+  <section class="panel" aria-labelledby="funds-h">
+    <h2 id="funds-h">Fund display</h2>
+    <p class="lede">Choose what each fund shows on the public page. Turning progress off hides the amount raised and the progress bar; the fund and its Give button stay. Changes appear on the public page within 15 seconds.</p>
+    <div class="fund-grid" id="fund-settings"></div>
+  </section>
+
+  <section class="panel" aria-labelledby="gift-h">
+    <h2 id="gift-h">Add a manual gift</h2>
+    <form class="gift-form" id="form">
+      <label>Fund
+        <select name="fund_id" id="fund" required></select>
+      </label>
+      <label>Amount
+        <span class="money"><input name="amount" type="number" min="0.01" step="0.01" inputmode="decimal" required></span>
+      </label>
+      <label>Gift date
+        <input name="gift_date" type="date" required id="date">
+      </label>
+      <label>Reference
+        <input name="note" maxlength="200" placeholder="Check # or batch #">
+      </label>
+      <label>Entered by
+        <input name="entered_by" maxlength="80" required placeholder="Your initials">
+      </label>
+      <button class="btn btn-primary" type="submit">Add gift</button>
+      <p class="hint">Manual gifts count toward the bar only if the gift date falls inside the campaign window. Don't enter donor names or account details here; use a check or batch number.</p>
+    </form>
+    <p id="msg" role="status" aria-live="polite"></p>
+  </section>
+
+  <section class="panel" aria-labelledby="recent-h">
+    <h2 id="recent-h">Recent gifts</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Date</th><th>Fund</th><th class="num">Amount</th><th class="num">Refunded</th><th>Source</th><th>Status</th><th>Reference</th><th>Entered by</th><th></th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
 </main>
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
   const money = (c) => '$' + (c / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
+  const wholeMoney = (c) => '$' + (c / 100).toLocaleString('en-US', { maximumFractionDigits: 2 });
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  const isColor = (c) => /^#[0-9a-fA-F]{6}$/.test(c || '');
   let fundNames = {};
+  let fundColors = {};
+  let settings = {}; // last saved settings per fund, from the server
+  let defaultGoal = 0;
 
   // Today's local date. valueAsDate would use the UTC date, which is already tomorrow on an Eastern evening.
   const today = new Date();
@@ -76,32 +177,127 @@
 
   function say(text, isErr) { $('msg').textContent = text; $('msg').className = isErr ? 'err' : ''; }
 
-  async function load() {
-    const res = await fetch('/admin/api/gifts', { cache: 'no-store' });
-    if (!res.ok) return say('Could not load gifts. Refresh to try again.', true);
-    const data = await res.json();
+  function api(url, opts = {}) {
+    return fetch(url, { ...opts, headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'fetch', ...(opts.headers || {}) } });
+  }
 
+  // ---------- Fund display settings ----------
+  function settingsCard(f) {
+    const s = settings[f.id];
+    return `
+      <article class="fund-set" data-fund="${esc(f.id)}"${isColor(f.color) ? ` style="--fund:${f.color}"` : ''}>
+        <h3>${esc(f.name)}</h3>
+        <label class="switch">
+          <span>Show progress on the public page
+            <span class="state">${s.show_progress ? 'On: raised amount and bar are shown' : 'Off: only the match amount is shown'}</span>
+          </span>
+          <input type="checkbox" role="switch" data-toggle aria-label="Show progress for the ${esc(f.name)}"${s.show_progress ? 'checked' : ''}>
+        </label>
+        <form class="row" data-goal-form>
+          <label>Match amount
+            <span class="money"><input name="goal" type="number" min="0.01" step="0.01" inputmode="decimal"
+              value="${s.goal_is_default ? '' : s.goal_cents / 100}" placeholder="${(defaultGoal / 100).toLocaleString('en-US')} (default)"></span>
+          </label>
+          <button class="btn btn-secondary" type="submit">Save</button>
+        </form>
+        <p class="msg" role="status" aria-live="polite"></p>
+      </article>`;
+  }
+
+  function renderSettings(funds) {
+    $('fund-settings').innerHTML = funds.map(settingsCard).join('');
+  }
+
+  async function saveSettings(card, body, doneText) {
+    const fundId = card.dataset.fund;
+    const msg = card.querySelector('.msg');
+    const controls = card.querySelectorAll('input, button');
+    controls.forEach((c) => { c.disabled = true; });
+    try {
+      const res = await api(`/admin/api/funds/${encodeURIComponent(fundId)}`, { method: 'PUT', body: JSON.stringify(body) });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(out.error || 'Not saved.');
+      settings[fundId] = { show_progress: out.show_progress, goal_cents: out.goal_cents, goal_is_default: out.goal_is_default };
+      card.outerHTML = settingsCard({ id: fundId, name: fundNames[fundId], color: fundColors[fundId] });
+      const fresh = $('fund-settings').querySelector(`[data-fund="${CSS.escape(fundId)}"]`);
+      fresh.querySelector('.msg').textContent = doneText(settings[fundId]);
+      fresh.querySelector('.msg').className = 'msg ok';
+    } catch (err) {
+      controls.forEach((c) => { c.disabled = false; });
+      msg.textContent = err.message === 'Failed to fetch' ? 'Not saved. Check your connection and try again.' : err.message;
+      msg.className = 'msg err';
+      return false;
+    }
+    return true;
+  }
+
+  // Current saved goal, in the form the API takes (dollars, or '' for the default).
+  const savedGoal = (s) => (s.goal_is_default ? '' : s.goal_cents / 100);
+
+  $('fund-settings').addEventListener('change', async (e) => {
+    if (!e.target.matches('[data-toggle]')) return;
+    const card = e.target.closest('.fund-set');
+    const s = settings[card.dataset.fund];
+    const on = e.target.checked;
+    const ok = await saveSettings(card, { show_progress: on, goal: savedGoal(s) },
+      () => (on ? 'Progress is now shown.' : 'Progress is now hidden.'));
+    if (!ok) e.target.checked = !on;
+  });
+
+  $('fund-settings').addEventListener('submit', async (e) => {
+    if (!e.target.matches('[data-goal-form]')) return;
+    e.preventDefault();
+    const card = e.target.closest('.fund-set');
+    const fundId = card.dataset.fund;
+    const raw = e.target.goal.value.trim();
+    const newCents = raw === '' ? defaultGoal : Math.round(Number(raw) * 100);
+    const label = raw === '' ? `the default (${wholeMoney(defaultGoal)})` : wholeMoney(newCents);
+    if (!confirm(`Change the match amount for the ${fundNames[fundId]} to ${label}? The public page will show the new amount.`)) return;
+    await saveSettings(card, { show_progress: settings[fundId].show_progress, goal: raw },
+      (s) => `Match amount saved: ${wholeMoney(s.goal_cents)}${s.goal_is_default ? ' (default)' : ''}.`);
+  });
+
+  // ---------- Gifts ----------
+  async function load() {
+    let data;
+    try {
+      const res = await fetch('/admin/api/gifts', { cache: 'no-store' });
+      if (!res.ok) throw new Error(res.status);
+      data = await res.json();
+    } catch {
+      return say('Could not load gifts. Refresh to try again.', true);
+    }
+
+    fundNames = Object.fromEntries(data.funds.map((f) => [f.id, f.name]));
+    fundColors = Object.fromEntries(data.funds.map((f) => [f.id, f.color]));
+    defaultGoal = data.campaign.default_goal_cents;
     if (!$('fund').options.length) {
       $('fund').innerHTML = data.funds.map((f) => `<option value="${esc(f.id)}">${esc(f.name)}</option>`).join('');
     }
-    fundNames = Object.fromEntries(data.funds.map((f) => [f.id, f.name]));
+    // Draw the settings cards once; later refreshes would wipe out a match amount being typed.
+    if (!$('fund-settings').children.length) {
+      settings = Object.fromEntries(data.funds.map((f) => [f.id, f]));
+      renderSettings(data.funds);
+    }
 
     const start = new Date(data.campaign.start).toLocaleDateString('en-US');
     const end = data.campaign.end ? new Date(data.campaign.end).toLocaleDateString('en-US') : 'no end date set';
-    $('mode').textContent = `${data.campaign.livemode ? 'Live mode' : 'Test mode'}. Campaign window: ${start} to ${end}.`;
+    const live = data.campaign.livemode;
+    $('mode').innerHTML = `<span class="pill${live ? ' live' : ''}">${live ? 'Live mode' : 'Test mode'}</span>Campaign window: ${esc(start)} to ${esc(end)}.`;
 
     $('rows').innerHTML = data.gifts.map((g) => {
       const inactive = g.status !== 'paid' || g.refunded_cents >= g.amount_cents;
+      const color = isColor(fundColors[g.fund_id]) ? ` style="--fund:${fundColors[g.fund_id]}"` : '';
       return `<tr class="${inactive ? 'inactive' : ''}">
         <td>${new Date(g.gift_date).toLocaleDateString('en-US')}</td>
-        <td>${esc(fundNames[g.fund_id] || g.fund_id)}</td>
+        <td><span class="dot"${color}></span>${esc(fundNames[g.fund_id] || g.fund_id)}</td>
         <td class="num">${money(g.amount_cents)}</td>
         <td class="num">${g.refunded_cents ? money(g.refunded_cents) : ''}</td>
         <td>${g.source === 'manual' ? 'Manual' : 'Stripe'}</td>
         <td>${esc(g.status)}</td>
         <td>${esc(g.note)}</td>
         <td>${esc(g.entered_by)}</td>
-        <td>${g.source === 'manual' && g.status === 'paid' ? `<button class="link" data-void="${g.id}">Void</button>` : ''}</td>
+        <td>${g.source === 'manual' && g.status === 'paid' ? `<button class="link-danger" data-void="${g.id}">Void</button>` : ''}</td>
       </tr>`;
     }).join('') || '<tr><td colspan="9">No gifts yet.</td></tr>';
   }
@@ -117,11 +313,7 @@
       // Noon keeps the calendar date from shifting. The server reads this in its own zone (UTC on Render),
       // which is 7-8 am Eastern on the same date.
       body.gift_date = body.gift_date + 'T12:00:00';
-      const res = await fetch('/admin/api/gifts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'fetch' },
-        body: JSON.stringify(body),
-      });
+      const res = await api('/admin/api/gifts', { method: 'POST', body: JSON.stringify(body) });
       const out = await res.json().catch(() => ({}));
       if (!res.ok) return say(out.error || 'Gift was not added.', true);
       say(`Added ${money(Math.round(Number(body.amount) * 100))} to the ${fundNames[body.fund_id]}.`);
@@ -138,7 +330,7 @@
   $('rows').addEventListener('click', async (e) => {
     const id = e.target.dataset.void;
     if (!id || !confirm('Void this manual gift? It will no longer count toward the total.')) return;
-    const res = await fetch(`/admin/api/gifts/${id}/void`, { method: 'POST', headers: { 'X-Requested-With': 'fetch' } });
+    const res = await api(`/admin/api/gifts/${id}/void`, { method: 'POST' });
     if (!res.ok) return say('Gift was not voided.', true);
     say('Gift voided.');
     load();

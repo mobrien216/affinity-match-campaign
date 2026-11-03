@@ -20,7 +20,13 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 // Test vs live is decided by the key. Events from the other mode are ignored,
 // and totals only include rows from the current mode, so test data never leaks into live totals.
 const LIVEMODE = process.env.STRIPE_SECRET_KEY.includes('_live_');
+// Default match amount per fund; each fund's can be changed on the admin page (fund_settings).
 const GOAL_CENTS = parseInt(process.env.GOAL_CENTS || '1000000', 10);
+const MAX_GOAL_CENTS = 100000000; // $1,000,000
+if (!Number.isInteger(GOAL_CENTS) || GOAL_CENTS <= 0 || !/^\d+$/.test(process.env.GOAL_CENTS || '1000000')) {
+  console.error('GOAL_CENTS must be a whole number of cents, e.g. 1000000 for $10,000');
+  process.exit(1);
+}
 const CAMPAIGN_START = new Date(process.env.CAMPAIGN_START);
 const CAMPAIGN_END = process.env.CAMPAIGN_END ? new Date(process.env.CAMPAIGN_END) : null;
 if (Number.isNaN(CAMPAIGN_START.getTime()) || (CAMPAIGN_END && Number.isNaN(CAMPAIGN_END.getTime()))) {
@@ -71,7 +77,28 @@ CREATE TABLE IF NOT EXISTS stripe_adjustments (
   disputed_lost  BOOLEAN NOT NULL DEFAULT false,
   updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Per-fund display settings from the admin page. No row, or a NULL goal, means the defaults.
+CREATE TABLE IF NOT EXISTS fund_settings (
+  fund_id       TEXT PRIMARY KEY,
+  show_progress BOOLEAN NOT NULL DEFAULT true,
+  goal_cents    INTEGER CHECK (goal_cents > 0),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 `;
+
+async function loadFundSettings() {
+  const { rows } = await pool.query('SELECT fund_id, show_progress, goal_cents FROM fund_settings');
+  const byId = Object.fromEntries(rows.map((r) => [r.fund_id, r]));
+  return Object.fromEntries(FUNDS.map((f) => {
+    const s = byId[f.id];
+    return [f.id, {
+      show_progress: s ? s.show_progress : true,
+      goal_cents: (s && s.goal_cents) || GOAL_CENTS,
+      goal_is_default: !(s && s.goal_cents),
+    }];
+  }));
+}
 
 // ---------- Totals cache ----------
 // The page polls every 30s; a 15s cache keeps DB load trivial even if the page goes viral.
@@ -223,6 +250,7 @@ app.get('/api/totals', async (req, res) => {
        GROUP BY fund_id`,
       [LIVEMODE, CAMPAIGN_START, CAMPAIGN_END]
     );
+    const settings = await loadFundSettings();
     const byFund = Object.fromEntries(rows.map((r) => [r.fund_id, r]));
     const now = new Date();
 
@@ -236,17 +264,17 @@ app.get('/api/totals', async (req, res) => {
         livemode: LIVEMODE,
       },
       funds: FUNDS.map((f) => {
+        const { show_progress, goal_cents: goal } = settings[f.id];
+        const base = { id: f.id, name: f.name, color: f.color, blurb: f.blurb, give_url: f.giveUrl, goal_cents: goal, show_progress };
+        // Progress turned off: leave the figures out of the response too, not just off the page.
+        if (!show_progress) return base;
         const raised = Number(byFund[f.id] ? byFund[f.id].raised_cents : 0);
-        const matched = Math.min(raised, GOAL_CENTS);
+        const matched = Math.min(raised, goal);
         return {
-          id: f.id,
-          name: f.name,
-          color: f.color,
-          blurb: f.blurb,
-          give_url: f.giveUrl,
+          ...base,
           raised_cents: raised,
           matched_cents: matched,
-          over_goal_cents: Math.max(0, raised - GOAL_CENTS),
+          over_goal_cents: Math.max(0, raised - goal),
           total_with_match_cents: raised + matched,
           gift_count: byFund[f.id] ? byFund[f.id].gift_count : 0,
         };
@@ -270,7 +298,7 @@ app.get('/healthz', async (req, res) => {
   }
 });
 
-// ---------- Admin (manual gift entry) ----------
+// ---------- Admin (manual gift entry and fund settings) ----------
 function safeEqual(a, b) {
   const ha = crypto.createHash('sha256').update(String(a)).digest();
   const hb = crypto.createHash('sha256').update(String(b)).digest();
@@ -314,11 +342,42 @@ app.get('/admin/api/gifts', asyncRoute(async (req, res) => {
      FROM gifts WHERE livemode = $1 ORDER BY gift_date DESC, id DESC LIMIT 300`,
     [LIVEMODE]
   );
+  const settings = await loadFundSettings();
   res.set('Cache-Control', 'no-store').json({
-    funds: FUNDS.map((f) => ({ id: f.id, name: f.name })),
-    campaign: { start: CAMPAIGN_START.toISOString(), end: CAMPAIGN_END ? CAMPAIGN_END.toISOString() : null, livemode: LIVEMODE },
+    funds: FUNDS.map((f) => ({ id: f.id, name: f.name, color: f.color, ...settings[f.id] })),
+    campaign: {
+      start: CAMPAIGN_START.toISOString(),
+      end: CAMPAIGN_END ? CAMPAIGN_END.toISOString() : null,
+      livemode: LIVEMODE,
+      default_goal_cents: GOAL_CENTS,
+    },
     gifts: rows,
   });
+}));
+
+// Save one fund's display settings. `goal` is in dollars; empty means use the default.
+app.put('/admin/api/funds/:id', express.json({ limit: '2kb' }), asyncRoute(async (req, res) => {
+  const fund = fundById(req.params.id);
+  if (!fund) return res.status(404).json({ error: 'Fund not found.' });
+  const { show_progress, goal } = req.body || {};
+  if (typeof show_progress !== 'boolean') return res.status(400).json({ error: 'Choose whether to show progress.' });
+
+  let goalCents = null;
+  if (goal !== null && goal !== undefined && String(goal).trim() !== '') {
+    goalCents = Math.round(Number(goal) * 100);
+    if (!Number.isFinite(goalCents) || goalCents <= 0 || goalCents > MAX_GOAL_CENTS) {
+      return res.status(400).json({ error: 'Enter a match amount between $0.01 and $1,000,000.' });
+    }
+  }
+
+  await pool.query(
+    `INSERT INTO fund_settings (fund_id, show_progress, goal_cents) VALUES ($1, $2, $3)
+     ON CONFLICT (fund_id) DO UPDATE SET show_progress = EXCLUDED.show_progress, goal_cents = EXCLUDED.goal_cents, updated_at = now()`,
+    [fund.id, show_progress, goalCents]
+  );
+  console.log(`Fund settings changed: ${fund.id} show_progress=${show_progress} goal_cents=${goalCents ?? 'default'}`);
+  invalidateTotals();
+  res.json({ ok: true, ...(await loadFundSettings())[fund.id] });
 }));
 
 app.post('/admin/api/gifts', express.json({ limit: '10kb' }), asyncRoute(async (req, res) => {
