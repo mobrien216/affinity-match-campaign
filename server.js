@@ -20,7 +20,13 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 // Test vs live is decided by the key. Events from the other mode are ignored,
 // and totals only include rows from the current mode, so test data never leaks into live totals.
 const LIVEMODE = process.env.STRIPE_SECRET_KEY.includes('_live_');
+// Default match amount per fund; each fund's can be changed on the admin page (fund_settings).
 const GOAL_CENTS = parseInt(process.env.GOAL_CENTS || '1000000', 10);
+const MAX_GOAL_CENTS = 100000000; // $1,000,000
+if (!Number.isInteger(GOAL_CENTS) || GOAL_CENTS <= 0 || !/^\d+$/.test(process.env.GOAL_CENTS || '1000000')) {
+  console.error('GOAL_CENTS must be a whole number of cents, e.g. 1000000 for $10,000');
+  process.exit(1);
+}
 const CAMPAIGN_START = new Date(process.env.CAMPAIGN_START);
 const CAMPAIGN_END = process.env.CAMPAIGN_END ? new Date(process.env.CAMPAIGN_END) : null;
 if (Number.isNaN(CAMPAIGN_START.getTime()) || (CAMPAIGN_END && Number.isNaN(CAMPAIGN_END.getTime()))) {
@@ -32,6 +38,8 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false,
 });
+// An idle connection dropping (e.g. a Render Postgres restart) emits 'error'; unhandled, it would crash the process.
+pool.on('error', (err) => console.error('Idle database connection error:', err.message));
 
 // ---------- Schema (idempotent, runs on boot) ----------
 // No donor names, emails, or card data are stored. Stripe remains the system of record for donors.
@@ -59,7 +67,38 @@ CREATE TABLE IF NOT EXISTS stripe_events (
   type        TEXT NOT NULL,
   received_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Refunds and lost disputes, keyed by PaymentIntent. Stripe can deliver these before the checkout
+-- event that creates the gift, so they're kept here and applied whenever the gift row is written.
+-- Rows for charges outside the campaign never match a gift and are harmless.
+CREATE TABLE IF NOT EXISTS stripe_adjustments (
+  payment_intent TEXT PRIMARY KEY,
+  refunded_cents INTEGER NOT NULL DEFAULT 0,
+  disputed_lost  BOOLEAN NOT NULL DEFAULT false,
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Per-fund display settings from the admin page. No row, or a NULL goal, means the defaults.
+CREATE TABLE IF NOT EXISTS fund_settings (
+  fund_id       TEXT PRIMARY KEY,
+  show_progress BOOLEAN NOT NULL DEFAULT true,
+  goal_cents    INTEGER CHECK (goal_cents > 0),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 `;
+
+async function loadFundSettings() {
+  const { rows } = await pool.query('SELECT fund_id, show_progress, goal_cents FROM fund_settings');
+  const byId = Object.fromEntries(rows.map((r) => [r.fund_id, r]));
+  return Object.fromEntries(FUNDS.map((f) => {
+    const s = byId[f.id];
+    return [f.id, {
+      show_progress: s ? s.show_progress : true,
+      goal_cents: (s && s.goal_cents) || GOAL_CENTS,
+      goal_is_default: !(s && s.goal_cents),
+    }];
+  }));
+}
 
 // ---------- Totals cache ----------
 // The page polls every 30s; a 15s cache keeps DB load trivial even if the page goes viral.
@@ -84,8 +123,9 @@ app.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async (r
     return res.json({ received: true, ignored: 'mode mismatch' });
   }
 
-  const client = await pool.connect();
+  let client;
   try {
+    client = await pool.connect();
     await client.query('BEGIN');
     // Idempotency: Stripe retries and may deliver the same event more than once.
     const fresh = await client.query(
@@ -101,12 +141,12 @@ app.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async (r
     invalidateTotals();
     res.json({ received: true });
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
+    if (client) await client.query('ROLLBACK').catch(() => {});
     console.error(`Error processing ${event.type} ${event.id}:`, err);
     // 500 tells Stripe to retry later; the event row was rolled back so the retry is processed fresh.
     res.status(500).send('Processing error');
   } finally {
-    client.release();
+    if (client) client.release();
   }
 });
 
@@ -123,19 +163,12 @@ async function handleEvent(db, event) {
     case 'charge.refunded':
       // amount_refunded is cumulative, so partial and repeat refunds are handled correctly.
       if (!obj.payment_intent) return;
-      return db.query(
-        `UPDATE gifts SET refunded_cents = LEAST($1, amount_cents), updated_at = now()
-         WHERE stripe_payment_intent = $2`,
-        [obj.amount_refunded, obj.payment_intent]
-      );
+      return recordAdjustment(db, obj.payment_intent, { refundedCents: obj.amount_refunded });
 
     case 'charge.dispute.closed':
       // Only subtract when the dispute is lost. Open or won disputes keep counting.
       if (obj.status !== 'lost' || !obj.payment_intent) return;
-      return db.query(
-        `UPDATE gifts SET status = 'disputed_lost', updated_at = now() WHERE stripe_payment_intent = $1`,
-        [obj.payment_intent]
-      );
+      return recordAdjustment(db, obj.payment_intent, { disputedLost: true });
 
     default:
       return; // Not an event we track.
@@ -169,6 +202,34 @@ async function upsertSession(db, session, eventCreated, forcedStatus) {
        updated_at = now()`,
     [fund.id, session.amount_total, status, session.livemode, session.id, session.payment_intent || null, eventCreated]
   );
+  // A refund or lost dispute may have arrived before this gift existed.
+  if (session.payment_intent) await applyAdjustments(db, session.payment_intent);
+}
+
+async function recordAdjustment(db, paymentIntent, { refundedCents = 0, disputedLost = false }) {
+  // GREATEST: amount_refunded is cumulative, so an older refund event arriving late can't lower it.
+  await db.query(
+    `INSERT INTO stripe_adjustments (payment_intent, refunded_cents, disputed_lost)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (payment_intent) DO UPDATE SET
+       refunded_cents = GREATEST(stripe_adjustments.refunded_cents, EXCLUDED.refunded_cents),
+       disputed_lost = stripe_adjustments.disputed_lost OR EXCLUDED.disputed_lost,
+       updated_at = now()`,
+    [paymentIntent, refundedCents, disputedLost]
+  );
+  await applyAdjustments(db, paymentIntent);
+}
+
+function applyAdjustments(db, paymentIntent) {
+  return db.query(
+    `UPDATE gifts g SET
+       refunded_cents = GREATEST(g.refunded_cents, LEAST(a.refunded_cents, g.amount_cents)),
+       status = CASE WHEN a.disputed_lost THEN 'disputed_lost' ELSE g.status END,
+       updated_at = now()
+     FROM stripe_adjustments a
+     WHERE a.payment_intent = $1 AND g.stripe_payment_intent = a.payment_intent`,
+    [paymentIntent]
+  );
 }
 
 // ---------- Public API ----------
@@ -189,6 +250,7 @@ app.get('/api/totals', async (req, res) => {
        GROUP BY fund_id`,
       [LIVEMODE, CAMPAIGN_START, CAMPAIGN_END]
     );
+    const settings = await loadFundSettings();
     const byFund = Object.fromEntries(rows.map((r) => [r.fund_id, r]));
     const now = new Date();
 
@@ -202,17 +264,17 @@ app.get('/api/totals', async (req, res) => {
         livemode: LIVEMODE,
       },
       funds: FUNDS.map((f) => {
+        const { show_progress, goal_cents: goal } = settings[f.id];
+        const base = { id: f.id, name: f.name, color: f.color, blurb: f.blurb, give_url: f.giveUrl, goal_cents: goal, show_progress };
+        // Progress turned off: leave the figures out of the response too, not just off the page.
+        if (!show_progress) return base;
         const raised = Number(byFund[f.id] ? byFund[f.id].raised_cents : 0);
-        const matched = Math.min(raised, GOAL_CENTS);
+        const matched = Math.min(raised, goal);
         return {
-          id: f.id,
-          name: f.name,
-          color: f.color,
-          blurb: f.blurb,
-          give_url: f.giveUrl,
+          ...base,
           raised_cents: raised,
           matched_cents: matched,
-          over_goal_cents: Math.max(0, raised - GOAL_CENTS),
+          over_goal_cents: Math.max(0, raised - goal),
           total_with_match_cents: raised + matched,
           gift_count: byFund[f.id] ? byFund[f.id].gift_count : 0,
         };
@@ -236,7 +298,7 @@ app.get('/healthz', async (req, res) => {
   }
 });
 
-// ---------- Admin (manual gift entry) ----------
+// ---------- Admin (manual gift entry and fund settings) ----------
 function safeEqual(a, b) {
   const ha = crypto.createHash('sha256').update(String(a)).digest();
   const hb = crypto.createHash('sha256').update(String(b)).digest();
@@ -256,23 +318,69 @@ function requireAdmin(req, res, next) {
   res.status(401).send('Authentication required');
 }
 
-app.use('/admin', requireAdmin);
+// Browsers resend Basic Auth on cross-site form posts, so admin writes must carry a header that only
+// the admin page's own fetch calls send (a cross-site page can't add one without a CORS preflight,
+// which this server never approves). The admin page also refuses to be framed, to prevent clickjacking.
+function adminGuard(req, res, next) {
+  res.set('X-Frame-Options', 'DENY');
+  res.set('Content-Security-Policy', "frame-ancestors 'none'");
+  if (req.method !== 'GET' && req.method !== 'HEAD' && req.get('x-requested-with') !== 'fetch') {
+    return res.status(403).json({ error: 'Request blocked.' });
+  }
+  next();
+}
+
+// Express 4 doesn't catch rejected promises; without this a database error would crash the process.
+const asyncRoute = (fn) => (req, res, next) => fn(req, res).catch(next);
+
+app.use('/admin', requireAdmin, adminGuard);
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'admin', 'admin.html')));
 
-app.get('/admin/api/gifts', async (req, res) => {
+app.get('/admin/api/gifts', asyncRoute(async (req, res) => {
   const { rows } = await pool.query(
     `SELECT id, source, fund_id, amount_cents, refunded_cents, status, gift_date, note, entered_by
      FROM gifts WHERE livemode = $1 ORDER BY gift_date DESC, id DESC LIMIT 300`,
     [LIVEMODE]
   );
+  const settings = await loadFundSettings();
   res.set('Cache-Control', 'no-store').json({
-    funds: FUNDS.map((f) => ({ id: f.id, name: f.name })),
-    campaign: { start: CAMPAIGN_START.toISOString(), end: CAMPAIGN_END ? CAMPAIGN_END.toISOString() : null, livemode: LIVEMODE },
+    funds: FUNDS.map((f) => ({ id: f.id, name: f.name, color: f.color, ...settings[f.id] })),
+    campaign: {
+      start: CAMPAIGN_START.toISOString(),
+      end: CAMPAIGN_END ? CAMPAIGN_END.toISOString() : null,
+      livemode: LIVEMODE,
+      default_goal_cents: GOAL_CENTS,
+    },
     gifts: rows,
   });
-});
+}));
 
-app.post('/admin/api/gifts', express.json({ limit: '10kb' }), async (req, res) => {
+// Save one fund's display settings. `goal` is in dollars; empty means use the default.
+app.put('/admin/api/funds/:id', express.json({ limit: '2kb' }), asyncRoute(async (req, res) => {
+  const fund = fundById(req.params.id);
+  if (!fund) return res.status(404).json({ error: 'Fund not found.' });
+  const { show_progress, goal } = req.body || {};
+  if (typeof show_progress !== 'boolean') return res.status(400).json({ error: 'Choose whether to show progress.' });
+
+  let goalCents = null;
+  if (goal !== null && goal !== undefined && String(goal).trim() !== '') {
+    goalCents = Math.round(Number(goal) * 100);
+    if (!Number.isFinite(goalCents) || goalCents <= 0 || goalCents > MAX_GOAL_CENTS) {
+      return res.status(400).json({ error: 'Enter a match amount between $0.01 and $1,000,000.' });
+    }
+  }
+
+  await pool.query(
+    `INSERT INTO fund_settings (fund_id, show_progress, goal_cents) VALUES ($1, $2, $3)
+     ON CONFLICT (fund_id) DO UPDATE SET show_progress = EXCLUDED.show_progress, goal_cents = EXCLUDED.goal_cents, updated_at = now()`,
+    [fund.id, show_progress, goalCents]
+  );
+  console.log(`Fund settings changed: ${fund.id} show_progress=${show_progress} goal_cents=${goalCents ?? 'default'}`);
+  invalidateTotals();
+  res.json({ ok: true, ...(await loadFundSettings())[fund.id] });
+}));
+
+app.post('/admin/api/gifts', express.json({ limit: '10kb' }), asyncRoute(async (req, res) => {
   const { fund_id, amount, gift_date, note, entered_by } = req.body || {};
   if (!fundById(fund_id)) return res.status(400).json({ error: 'Choose a fund.' });
 
@@ -291,21 +399,32 @@ app.post('/admin/api/gifts', express.json({ limit: '10kb' }), async (req, res) =
   );
   invalidateTotals();
   res.status(201).json({ id: rows[0].id });
-});
+}));
 
-app.post('/admin/api/gifts/:id/void', async (req, res) => {
+app.post('/admin/api/gifts/:id/void', asyncRoute(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0 || id > 2147483647) {
+    return res.status(404).json({ error: 'Manual gift not found or already voided.' });
+  }
   const { rowCount } = await pool.query(
     `UPDATE gifts SET status = 'voided', updated_at = now()
      WHERE id = $1 AND source = 'manual' AND livemode = $2 AND status = 'paid'`,
-    [parseInt(req.params.id, 10), LIVEMODE]
+    [id, LIVEMODE]
   );
   if (!rowCount) return res.status(404).json({ error: 'Manual gift not found or already voided.' });
   invalidateTotals();
   res.json({ ok: true });
-});
+}));
 
 // ---------- Landing page ----------
 app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
+
+// Log the details; never send a stack trace to the browser.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  console.error(`${req.method} ${req.path} failed:`, err);
+  res.status(err.status || 500).json({ error: 'Something went wrong. Try again.' });
+});
 
 // ---------- Boot ----------
 (async () => {
