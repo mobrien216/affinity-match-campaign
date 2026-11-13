@@ -57,7 +57,12 @@
   .window-status.closed { background:#F8DDE3; color:var(--red); }
 
   .toggles { display:grid; gap:0; margin-top:16px; border-top:1px solid var(--gray3); }
-  .toggle-row { display:grid; grid-template-columns:1fr auto; gap:4px 16px; align-items:center; padding:14px 0; border-bottom:1px solid var(--gray3); }
+  .toggle-row { display:grid; grid-template-columns:minmax(200px,1fr) auto auto; gap:8px 24px; align-items:center; padding:14px 0; border-bottom:1px solid var(--gray3); }
+  .goal-edit { display:flex; align-items:center; gap:8px; }
+  .goal-edit .prefix { font-weight:700; color:var(--label); }
+  .goal-edit input { width:130px; min-height:38px; padding:6px 10px; }
+  .goal-edit button { min-height:38px; padding:0 14px; font-size:14px; }
+  @media (max-width:720px){ .toggle-row { grid-template-columns:1fr; } }
   .toggle-row .name { font-weight:700; display:flex; align-items:center; gap:10px; }
   .toggle-row .dot { width:12px; height:12px; border-radius:2px; flex:none; }
   .toggle-row .meta { grid-column:1/-1; font-size:13px; color:var(--label); }
@@ -125,8 +130,8 @@
   </section>
 
   <section class="panel">
-  <h2>Public display</h2>
-  <p class="hint">Turn a fund's progress off to hide its amount, progress bar, and status lines on the public page. The fund card and its Give button stay, and gifts keep counting in the background, so turning it back on shows the up-to-date total. Changes appear on the public page within a few seconds.</p>
+  <h2>Funds</h2>
+  <p class="hint">Set each fund's match goal and choose whether its progress bar shows on the public page. Turning the bar off hides only the bar; the amount raised, the goal, and the status lines still show, and gifts keep counting. Changes appear on the public page within a few seconds.</p>
   <div class="by-row">
     <label>Changed by
       <input id="displayBy" maxlength="80" placeholder="Your initials">
@@ -134,6 +139,15 @@
   </div>
   <div class="toggles" id="fundToggles"></div>
   <p id="displayMsg" role="status" aria-live="polite"></p>
+  <details>
+    <summary>Change history</summary>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Changed</th><th>By</th><th>Fund</th><th>Setting</th><th>From</th><th>To</th></tr></thead>
+        <tbody id="fundLogRows"></tbody>
+      </table>
+    </div>
+  </details>
   </section>
 
   <section class="panel">
@@ -231,6 +245,7 @@
     }
     fundNames = Object.fromEntries(data.funds.map((f) => [f.id, f.name]));
     renderToggles(data.funds);
+    loadFundLog();
 
     const c = data.campaign;
     $('mode').textContent = `${c.livemode ? 'Live mode' : 'Test mode'}. Campaign window: ${easternLabel(c.start)} to ${easternLabel(c.end)}.`;
@@ -269,45 +284,97 @@
     $('fundToggles').innerHTML = funds.map((f) => `
       <div class="toggle-row">
         <span class="name"><span class="dot" style="background:${FUND_COLORS[f.id] || 'var(--gray3)'}"></span>${esc(f.name)}</span>
+        <span class="goal-edit">
+          <span class="prefix" aria-hidden="true">$</span>
+          <input type="number" min="1" step="1" inputmode="numeric" data-goal-for="${esc(f.id)}"
+                 value="${Math.round((f.match_goal_cents || 0) / 100)}" aria-label="Match goal for the ${esc(f.name)}, in dollars">
+          <button type="button" data-save-goal="${esc(f.id)}">Save goal</button>
+        </span>
         <label class="switch">
           <input type="checkbox" role="switch" data-fund="${esc(f.id)}" ${f.show_progress ? 'checked' : ''}
-                 aria-label="Show progress for the ${esc(f.name)}">
-          <span>${f.show_progress ? 'Progress shown' : 'Progress hidden'}</span>
+                 aria-label="Show the progress bar for the ${esc(f.name)}">
+          <span>${f.show_progress ? 'Progress bar shown' : 'Progress bar hidden'}</span>
         </label>
-        <span class="meta">${f.settings_updated_by ? `Last changed by ${esc(f.settings_updated_by)} on ${esc(easternLabel(f.settings_updated_at))}` : 'Shown by default'}</span>
+        <span class="meta">${f.settings_updated_by ? `Last changed by ${esc(f.settings_updated_by)} on ${esc(easternLabel(f.settings_updated_at))}` : 'Using defaults'}</span>
       </div>`).join('');
   }
+
+  async function saveFund(fundId, body, onFail) {
+    const msg = $('displayMsg');
+    const who = $('displayBy').value.trim();
+    if (!who) {
+      onFail && onFail();
+      msg.textContent = 'Enter your initials in "Changed by" first.';
+      msg.className = 'err';
+      $('displayBy').focus();
+      return false;
+    }
+    const res = await fetch(`/admin/api/funds/${encodeURIComponent(fundId)}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...body, changed_by: who }),
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      onFail && onFail();
+      msg.textContent = out.error || 'Setting was not saved.';
+      msg.className = 'err';
+      return false;
+    }
+    msg.className = '';
+    return true;
+  }
+
+  $('fundToggles').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-save-goal]');
+    if (!btn) return;
+    const id = btn.dataset.saveGoal;
+    const input = $('fundToggles').querySelector(`input[data-goal-for="${id}"]`);
+    const dollarsVal = Number(input.value);
+    if (!Number.isFinite(dollarsVal) || dollarsVal < 1) {
+      $('displayMsg').textContent = 'Enter a match goal of at least $1.';
+      $('displayMsg').className = 'err';
+      return;
+    }
+    const pretty = '$' + dollarsVal.toLocaleString('en-US');
+    if (!confirm(`Set the ${fundNames[id]} match goal to ${pretty}?\n\nThis changes the goal shown on the public page immediately.`)) return;
+    btn.disabled = true;
+    if (await saveFund(id, { match_goal: dollarsVal })) {
+      $('displayMsg').textContent = `${fundNames[id]}: match goal set to ${pretty}.`;
+      load();
+    }
+    btn.disabled = false;
+  });
 
   $('fundToggles').addEventListener('change', async (e) => {
     const box = e.target.closest('input[data-fund]');
     if (!box) return;
-    const msg = $('displayMsg');
-    const who = $('displayBy').value.trim();
-    if (!who) {
-      box.checked = !box.checked;
-      msg.textContent = 'Enter your initials in "Changed by" first.';
-      msg.className = 'err';
-      $('displayBy').focus();
-      return;
-    }
-    box.disabled = true;
     const show = box.checked;
-    const res = await fetch(`/admin/api/funds/${encodeURIComponent(box.dataset.fund)}`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ show_progress: show, changed_by: who }),
-    });
-    const out = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      box.checked = !show;
-      box.disabled = false;
-      msg.textContent = out.error || 'Setting was not saved.';
-      msg.className = 'err';
-      return;
+    box.disabled = true;
+    const ok = await saveFund(box.dataset.fund, { show_progress: show }, () => { box.checked = !show; });
+    box.disabled = false;
+    if (ok) {
+      $('displayMsg').textContent = `${fundNames[box.dataset.fund]}: progress bar ${show ? 'shown' : 'hidden'} on the public page.`;
+      load();
     }
-    msg.textContent = `${fundNames[box.dataset.fund]}: progress ${show ? 'shown' : 'hidden'} on the public page.`;
-    msg.className = '';
-    load();
   });
+
+  const SETTING_LABELS = { show_progress: 'Progress bar', match_goal: 'Match goal' };
+  function fmtSetting(setting, v) {
+    if (v === null || v === undefined || v === '') return '';
+    if (setting === 'match_goal') return '$' + Math.round(Number(v) / 100).toLocaleString('en-US');
+    if (setting === 'show_progress') return v === 'true' ? 'Shown' : 'Hidden';
+    return v;
+  }
+  async function loadFundLog() {
+    const res = await fetch('/admin/api/funds/log', { cache: 'no-store' });
+    if (!res.ok) return;
+    const { log } = await res.json();
+    $('fundLogRows').innerHTML = log.map((r) => `<tr>
+      <td>${esc(easternLabel(r.changed_at))}</td><td>${esc(r.changed_by)}</td>
+      <td>${esc(fundNames[r.fund_id] || r.fund_id)}</td><td>${esc(SETTING_LABELS[r.setting] || r.setting)}</td>
+      <td>${esc(fmtSetting(r.setting, r.old_value))}</td><td>${esc(fmtSetting(r.setting, r.new_value))}</td></tr>`).join('')
+      || '<tr><td colspan="6">No changes yet.</td></tr>';
+  }
 
   async function loadLog() {
     const res = await fetch('/admin/api/campaign/log', { cache: 'no-store' });
