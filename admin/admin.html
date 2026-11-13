@@ -70,6 +70,7 @@
   #displayMsg { min-height:1.5em; margin:12px 0 0; font-weight:700; color:var(--mid); }
   #displayMsg.err { color:var(--red); }
   .by-row { display:grid; grid-template-columns:minmax(180px, 260px); margin-top:16px; }
+  .load-error { margin:0 0 24px; padding:16px 20px; background:#F8DDE3; border-left:4px solid var(--red); border-radius:var(--r); color:var(--red); font-weight:700; }
   details { margin-top:16px; border-top:1px solid var(--gray3); padding-top:12px; }
   summary { cursor:pointer; font-weight:700; color:var(--green); }
 
@@ -92,6 +93,7 @@
   </div>
 </header>
 <main>
+  <p class="load-error" id="loadError" role="alert" hidden></p>
   <section class="panel">
 
   <h2>Campaign dates <span class="window-status" id="windowStatus"></span></h2>
@@ -211,9 +213,18 @@
   function say(text, isErr) { $('msg').textContent = text; $('msg').className = isErr ? 'err' : ''; }
 
   async function load() {
-    const res = await fetch('/admin/api/gifts', { cache: 'no-store' });
-    if (!res.ok) return say('Could not load gifts. Refresh to try again.', true);
-    const data = await res.json();
+    let res, data;
+    try {
+      res = await fetch('/admin/api/gifts', { cache: 'no-store' });
+      data = await res.json();
+      if (!res.ok || !data.funds) throw new Error((data && data.error) || `HTTP ${res.status}`);
+    } catch (err) {
+      // Show the problem at the top, where it can't be missed.
+      $('loadError').textContent = `Admin data didn't load (${err.message}). The dates, fund toggles, and gift list need it. Check that the latest server.js is deployed in Render, then refresh.`;
+      $('loadError').hidden = false;
+      return;
+    }
+    $('loadError').hidden = true;
 
     if (!$('fund').options.length) {
       $('fund').innerHTML = data.funds.map((f) => `<option value="${esc(f.id)}">${esc(f.name)}</option>`).join('');
