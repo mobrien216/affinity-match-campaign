@@ -229,7 +229,9 @@ a{color:inherit}
     if (thanksFund) {
       const f = data.funds.find((x) => x.id === thanksFund);
       if (f) {
-        thanksEl.textContent = `Thank you for your gift to the ${f.name}. It will appear in the total within a minute.`;
+        thanksEl.textContent = f.show_progress === false
+          ? `Thank you for your gift to the ${f.name}.`
+          : `Thank you for your gift to the ${f.name}. It will appear in the total within a minute.`;
         thanksEl.classList.add('show');
       }
     }
