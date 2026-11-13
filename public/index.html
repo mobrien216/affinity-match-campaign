@@ -78,7 +78,8 @@ a{color:inherit}
 .track{height:12px;margin-top:var(--space-3);border-radius:6px;background:var(--gray3);overflow:hidden}
 .track i{display:block;height:100%;width:0;border-radius:6px;background:var(--fund);transition:width var(--t-fill) var(--ease)}
 .fund-card.reached .track i{background:var(--mid)}
-.track-spacer{height:12px;margin-top:var(--space-3)}
+.goal-only{margin-top:var(--space-5);font-size:var(--fs-body-lg);line-height:1.45}
+.goal-only strong{font-family:var(--head);font-weight:700}
 
 .status{margin-top:var(--space-3);font-weight:700;line-height:1.45}
 .impact{margin-top:4px;font-size:16px;line-height:1.45;font-variant-numeric:tabular-nums}
@@ -146,6 +147,19 @@ a{color:inherit}
       ? `<a class="btn btn-primary" href="${escapeHtml(f.give_url)}" aria-label="Give to the ${escapeHtml(f.name)}">Give to this fund</a>`
       : `<a class="btn" aria-disabled="true">Giving link coming soon</a>`;
 
+    // Progress hidden in /admin: no totals, bar, or status lines; just the match goal and the Give button.
+    if (f.show_progress === false) {
+      return `
+      <article class="fund-card" id="${escapeHtml(f.id)}"${style}>
+        <p class="t-sub">Affinity Fund</p>
+        <h2>${escapeHtml(f.name)}</h2>
+        ${f.blurb ? `<p class="blurb">${escapeHtml(f.blurb)}</p>` : ''}
+        <p class="goal-only">Gifts matched dollar for dollar up to <strong>${dollars(goal)}</strong></p>
+        <div class="btn-gap"></div>
+        ${giveBtn}
+      </article>`;
+    }
+
     const pct = Math.min(100, (f.raised_cents / goal) * 100);
     // Any fund above $0 shows a visible sliver so early gifts register; the dollar figures stay exact.
     const shownPct = f.raised_cents > 0 ? Math.max(pct, 2) : 0;
@@ -158,10 +172,7 @@ a{color:inherit}
     else if (reached) status = 'Goal reached';
     else status = `${dollars(toGo)} to go to unlock the full match`;
 
-    // Progress bar toggled off in /admin: hide only the bar. A same-height spacer keeps cards aligned.
-    const bar = f.show_progress === false
-      ? '<div class="track-spacer" aria-hidden="true"></div>'
-      : `<div class="track" role="progressbar" aria-label="${escapeHtml(f.name)} progress"
+    const bar = `<div class="track" role="progressbar" aria-label="${escapeHtml(f.name)} progress"
              aria-valuemin="0" aria-valuemax="${goal / 100}" aria-valuenow="${Math.min(f.raised_cents, goal) / 100}"
              aria-valuetext="${dollars(f.raised_cents)} raised of ${dollars(goal)} goal">
           <i data-pct="${shownPct.toFixed(2)}"></i>
