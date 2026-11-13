@@ -295,6 +295,8 @@ app.get('/healthz', async (req, res) => {
 });
 
 // ---------- Admin (manual gift entry) ----------
+// Express 4 doesn't catch errors in async handlers; this passes them to the error handler below.
+const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 function safeEqual(a, b) {
   const ha = crypto.createHash('sha256').update(String(a)).digest();
   const hb = crypto.createHash('sha256').update(String(b)).digest();
@@ -317,7 +319,7 @@ function requireAdmin(req, res, next) {
 app.use('/admin', requireAdmin);
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'admin', 'admin.html')));
 
-app.get('/admin/api/gifts', async (req, res) => {
+app.get('/admin/api/gifts', wrap(async (req, res) => {
   const { rows } = await pool.query(
     `SELECT id, source, fund_id, amount_cents, refunded_cents, status, gift_date, note, entered_by
      FROM gifts WHERE livemode = $1 ORDER BY gift_date DESC, id DESC LIMIT 300`,
@@ -342,9 +344,9 @@ app.get('/admin/api/gifts', async (req, res) => {
     },
     gifts: rows,
   });
-});
+}));
 
-app.post('/admin/api/gifts', express.json({ limit: '10kb' }), async (req, res) => {
+app.post('/admin/api/gifts', express.json({ limit: '10kb' }), wrap(async (req, res) => {
   const { fund_id, amount, gift_date, note, entered_by } = req.body || {};
   if (!fundById(fund_id)) return res.status(400).json({ error: 'Choose a fund.' });
 
@@ -363,9 +365,9 @@ app.post('/admin/api/gifts', express.json({ limit: '10kb' }), async (req, res) =
   );
   invalidateTotals();
   res.status(201).json({ id: rows[0].id });
-});
+}));
 
-app.post('/admin/api/gifts/:id/void', async (req, res) => {
+app.post('/admin/api/gifts/:id/void', wrap(async (req, res) => {
   const { rowCount } = await pool.query(
     `UPDATE gifts SET status = 'voided', updated_at = now()
      WHERE id = $1 AND source = 'manual' AND livemode = $2 AND status = 'paid'`,
@@ -374,10 +376,10 @@ app.post('/admin/api/gifts/:id/void', async (req, res) => {
   if (!rowCount) return res.status(404).json({ error: 'Manual gift not found or already voided.' });
   invalidateTotals();
   res.json({ ok: true });
-});
+}));
 
 // Change the campaign window. Takes effect immediately on the public totals.
-app.put('/admin/api/campaign', express.json({ limit: '10kb' }), async (req, res) => {
+app.put('/admin/api/campaign', express.json({ limit: '10kb' }), wrap(async (req, res) => {
   const { start, end, changed_by } = req.body || {};
   const newStart = new Date(start);
   const newEnd = end ? new Date(end) : null;
@@ -411,10 +413,10 @@ app.put('/admin/api/campaign', express.json({ limit: '10kb' }), async (req, res)
   invalidateTotals();
   console.log(`Campaign window changed by ${who}: ${newStart.toISOString()} to ${newEnd ? newEnd.toISOString() : 'no end'}`);
   res.json({ ok: true });
-});
+}));
 
 // Show or hide a fund's progress (amount, bar, and status lines) on the public page.
-app.put('/admin/api/funds/:id', express.json({ limit: '10kb' }), async (req, res) => {
+app.put('/admin/api/funds/:id', express.json({ limit: '10kb' }), wrap(async (req, res) => {
   const fund = fundById(req.params.id);
   if (!fund) return res.status(404).json({ error: 'Unknown fund.' });
   const { show_progress, changed_by } = req.body || {};
@@ -445,13 +447,21 @@ app.put('/admin/api/funds/:id', express.json({ limit: '10kb' }), async (req, res
   invalidateTotals();
   console.log(`${fund.id} progress ${show_progress ? 'shown' : 'hidden'} by ${who}`);
   res.json({ ok: true });
-});
+}));
 
-app.get('/admin/api/campaign/log', async (req, res) => {
+app.get('/admin/api/campaign/log', wrap(async (req, res) => {
   const { rows } = await pool.query(
     'SELECT old_start, old_end, new_start, new_end, changed_by, changed_at FROM campaign_settings_log ORDER BY changed_at DESC LIMIT 50'
   );
   res.set('Cache-Control', 'no-store').json({ log: rows });
+}));
+
+// Any unhandled error in a route: log it and return a readable JSON error.
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  console.error(`Error on ${req.method} ${req.path}:`, err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: 'Something went wrong on the server. Check the Render logs.' });
 });
 
 // ---------- Landing page ----------
