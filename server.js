@@ -8,7 +8,7 @@ const { Pool } = require('pg');
 const { FUNDS, fundById, fundForSession } = require('./funds');
 
 // ---------- Config ----------
-const REQUIRED = ['DATABASE_URL', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'ADMIN_USER', 'ADMIN_PASSWORD', 'CAMPAIGN_START'];
+const REQUIRED = ['DATABASE_URL', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'ADMIN_USER', 'ADMIN_PASSWORD'];
 for (const key of REQUIRED) {
   if (!process.env[key]) {
     console.error(`Missing required environment variable: ${key}`);
@@ -20,16 +20,13 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 // Test vs live is decided by the key. Events from the other mode are ignored,
 // and totals only include rows from the current mode, so test data never leaks into live totals.
 const LIVEMODE = process.env.STRIPE_SECRET_KEY.includes('_live_');
-// Default match amount per fund; each fund's can be changed on the admin page (fund_settings).
 const GOAL_CENTS = parseInt(process.env.GOAL_CENTS || '1000000', 10);
-const MAX_GOAL_CENTS = 100000000; // $1,000,000
-if (!Number.isInteger(GOAL_CENTS) || GOAL_CENTS <= 0 || !/^\d+$/.test(process.env.GOAL_CENTS || '1000000')) {
-  console.error('GOAL_CENTS must be a whole number of cents, e.g. 1000000 for $10,000');
-  process.exit(1);
-}
-const CAMPAIGN_START = new Date(process.env.CAMPAIGN_START);
-const CAMPAIGN_END = process.env.CAMPAIGN_END ? new Date(process.env.CAMPAIGN_END) : null;
-if (Number.isNaN(CAMPAIGN_START.getTime()) || (CAMPAIGN_END && Number.isNaN(CAMPAIGN_END.getTime()))) {
+// Campaign dates live in the database and are edited at /admin.
+// CAMPAIGN_START / CAMPAIGN_END env vars are used ONLY to seed the very first values;
+// after that, changing them in Render has no effect.
+const ENV_START = process.env.CAMPAIGN_START ? new Date(process.env.CAMPAIGN_START) : null;
+const ENV_END = process.env.CAMPAIGN_END ? new Date(process.env.CAMPAIGN_END) : null;
+if ((ENV_START && Number.isNaN(ENV_START.getTime())) || (ENV_END && Number.isNaN(ENV_END.getTime()))) {
   console.error('CAMPAIGN_START / CAMPAIGN_END must be ISO dates, e.g. 2026-11-17T00:00:00-05:00');
   process.exit(1);
 }
@@ -38,8 +35,6 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false,
 });
-// An idle connection dropping (e.g. a Render Postgres restart) emits 'error'; unhandled, it would crash the process.
-pool.on('error', (err) => console.error('Idle database connection error:', err.message));
 
 // ---------- Schema (idempotent, runs on boot) ----------
 // No donor names, emails, or card data are stored. Stripe remains the system of record for donors.
@@ -62,48 +57,47 @@ CREATE TABLE IF NOT EXISTS gifts (
 );
 CREATE INDEX IF NOT EXISTS gifts_fund_idx ON gifts (fund_id, status, livemode);
 
+CREATE TABLE IF NOT EXISTS campaign_settings (
+  id          INTEGER PRIMARY KEY CHECK (id = 1),
+  start_at    TIMESTAMPTZ NOT NULL,
+  end_at      TIMESTAMPTZ,
+  updated_by  TEXT,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (end_at IS NULL OR end_at > start_at)
+);
+
+-- Every change to the campaign window, for audit and finance reconciliation.
+CREATE TABLE IF NOT EXISTS campaign_settings_log (
+  id          SERIAL PRIMARY KEY,
+  old_start   TIMESTAMPTZ,
+  old_end     TIMESTAMPTZ,
+  new_start   TIMESTAMPTZ NOT NULL,
+  new_end     TIMESTAMPTZ,
+  changed_by  TEXT NOT NULL,
+  changed_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS stripe_events (
   id          TEXT PRIMARY KEY,
   type        TEXT NOT NULL,
   received_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
--- Refunds and lost disputes, keyed by PaymentIntent. Stripe can deliver these before the checkout
--- event that creates the gift, so they're kept here and applied whenever the gift row is written.
--- Rows for charges outside the campaign never match a gift and are harmless.
-CREATE TABLE IF NOT EXISTS stripe_adjustments (
-  payment_intent TEXT PRIMARY KEY,
-  refunded_cents INTEGER NOT NULL DEFAULT 0,
-  disputed_lost  BOOLEAN NOT NULL DEFAULT false,
-  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- Per-fund display settings from the admin page. No row, or a NULL goal, means the defaults.
-CREATE TABLE IF NOT EXISTS fund_settings (
-  fund_id       TEXT PRIMARY KEY,
-  show_progress BOOLEAN NOT NULL DEFAULT true,
-  goal_cents    INTEGER CHECK (goal_cents > 0),
-  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
-);
 `;
-
-async function loadFundSettings() {
-  const { rows } = await pool.query('SELECT fund_id, show_progress, goal_cents FROM fund_settings');
-  const byId = Object.fromEntries(rows.map((r) => [r.fund_id, r]));
-  return Object.fromEntries(FUNDS.map((f) => {
-    const s = byId[f.id];
-    return [f.id, {
-      show_progress: s ? s.show_progress : true,
-      goal_cents: (s && s.goal_cents) || GOAL_CENTS,
-      goal_is_default: !(s && s.goal_cents),
-    }];
-  }));
-}
 
 // ---------- Totals cache ----------
 // The page polls every 30s; a 15s cache keeps DB load trivial even if the page goes viral.
 let totalsCache = { at: 0, body: null };
 const invalidateTotals = () => { totalsCache = { at: 0, body: null }; };
+
+// ---------- Campaign window (cached; cleared when edited in /admin) ----------
+let campaignCache = null;
+async function getCampaign() {
+  if (campaignCache) return campaignCache;
+  const { rows } = await pool.query('SELECT start_at, end_at, updated_by, updated_at FROM campaign_settings WHERE id = 1');
+  const r = rows[0];
+  campaignCache = { start: r.start_at, end: r.end_at, updated_by: r.updated_by, updated_at: r.updated_at };
+  return campaignCache;
+}
 
 const app = express();
 app.disable('x-powered-by');
@@ -123,9 +117,8 @@ app.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async (r
     return res.json({ received: true, ignored: 'mode mismatch' });
   }
 
-  let client;
+  const client = await pool.connect();
   try {
-    client = await pool.connect();
     await client.query('BEGIN');
     // Idempotency: Stripe retries and may deliver the same event more than once.
     const fresh = await client.query(
@@ -141,12 +134,12 @@ app.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async (r
     invalidateTotals();
     res.json({ received: true });
   } catch (err) {
-    if (client) await client.query('ROLLBACK').catch(() => {});
+    await client.query('ROLLBACK').catch(() => {});
     console.error(`Error processing ${event.type} ${event.id}:`, err);
     // 500 tells Stripe to retry later; the event row was rolled back so the retry is processed fresh.
     res.status(500).send('Processing error');
   } finally {
-    if (client) client.release();
+    client.release();
   }
 });
 
@@ -163,12 +156,19 @@ async function handleEvent(db, event) {
     case 'charge.refunded':
       // amount_refunded is cumulative, so partial and repeat refunds are handled correctly.
       if (!obj.payment_intent) return;
-      return recordAdjustment(db, obj.payment_intent, { refundedCents: obj.amount_refunded });
+      return db.query(
+        `UPDATE gifts SET refunded_cents = LEAST($1, amount_cents), updated_at = now()
+         WHERE stripe_payment_intent = $2`,
+        [obj.amount_refunded, obj.payment_intent]
+      );
 
     case 'charge.dispute.closed':
       // Only subtract when the dispute is lost. Open or won disputes keep counting.
       if (obj.status !== 'lost' || !obj.payment_intent) return;
-      return recordAdjustment(db, obj.payment_intent, { disputedLost: true });
+      return db.query(
+        `UPDATE gifts SET status = 'disputed_lost', updated_at = now() WHERE stripe_payment_intent = $1`,
+        [obj.payment_intent]
+      );
 
     default:
       return; // Not an event we track.
@@ -202,34 +202,6 @@ async function upsertSession(db, session, eventCreated, forcedStatus) {
        updated_at = now()`,
     [fund.id, session.amount_total, status, session.livemode, session.id, session.payment_intent || null, eventCreated]
   );
-  // A refund or lost dispute may have arrived before this gift existed.
-  if (session.payment_intent) await applyAdjustments(db, session.payment_intent);
-}
-
-async function recordAdjustment(db, paymentIntent, { refundedCents = 0, disputedLost = false }) {
-  // GREATEST: amount_refunded is cumulative, so an older refund event arriving late can't lower it.
-  await db.query(
-    `INSERT INTO stripe_adjustments (payment_intent, refunded_cents, disputed_lost)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (payment_intent) DO UPDATE SET
-       refunded_cents = GREATEST(stripe_adjustments.refunded_cents, EXCLUDED.refunded_cents),
-       disputed_lost = stripe_adjustments.disputed_lost OR EXCLUDED.disputed_lost,
-       updated_at = now()`,
-    [paymentIntent, refundedCents, disputedLost]
-  );
-  await applyAdjustments(db, paymentIntent);
-}
-
-function applyAdjustments(db, paymentIntent) {
-  return db.query(
-    `UPDATE gifts g SET
-       refunded_cents = GREATEST(g.refunded_cents, LEAST(a.refunded_cents, g.amount_cents)),
-       status = CASE WHEN a.disputed_lost THEN 'disputed_lost' ELSE g.status END,
-       updated_at = now()
-     FROM stripe_adjustments a
-     WHERE a.payment_intent = $1 AND g.stripe_payment_intent = a.payment_intent`,
-    [paymentIntent]
-  );
 }
 
 // ---------- Public API ----------
@@ -237,6 +209,7 @@ app.get('/api/totals', async (req, res) => {
   res.set('Cache-Control', 'no-store');
   try {
     if (totalsCache.body && Date.now() - totalsCache.at < 15000) return res.json(totalsCache.body);
+    const campaign = await getCampaign();
 
     const { rows } = await pool.query(
       `SELECT fund_id,
@@ -248,33 +221,32 @@ app.get('/api/totals', async (req, res) => {
          AND gift_date >= $2
          AND ($3::timestamptz IS NULL OR gift_date <= $3)
        GROUP BY fund_id`,
-      [LIVEMODE, CAMPAIGN_START, CAMPAIGN_END]
+      [LIVEMODE, campaign.start, campaign.end]
     );
-    const settings = await loadFundSettings();
     const byFund = Object.fromEntries(rows.map((r) => [r.fund_id, r]));
     const now = new Date();
 
     const body = {
       campaign: {
         goal_cents: GOAL_CENTS,
-        start: CAMPAIGN_START.toISOString(),
-        end: CAMPAIGN_END ? CAMPAIGN_END.toISOString() : null,
-        started: now >= CAMPAIGN_START,
-        ended: CAMPAIGN_END ? now > CAMPAIGN_END : false,
+        start: campaign.start.toISOString(),
+        end: campaign.end ? campaign.end.toISOString() : null,
+        started: now >= campaign.start,
+        ended: campaign.end ? now > campaign.end : false,
         livemode: LIVEMODE,
       },
       funds: FUNDS.map((f) => {
-        const { show_progress, goal_cents: goal } = settings[f.id];
-        const base = { id: f.id, name: f.name, color: f.color, blurb: f.blurb, give_url: f.giveUrl, goal_cents: goal, show_progress };
-        // Progress turned off: leave the figures out of the response too, not just off the page.
-        if (!show_progress) return base;
         const raised = Number(byFund[f.id] ? byFund[f.id].raised_cents : 0);
-        const matched = Math.min(raised, goal);
+        const matched = Math.min(raised, GOAL_CENTS);
         return {
-          ...base,
+          id: f.id,
+          name: f.name,
+          color: f.color,
+          blurb: f.blurb,
+          give_url: f.giveUrl,
           raised_cents: raised,
           matched_cents: matched,
-          over_goal_cents: Math.max(0, raised - goal),
+          over_goal_cents: Math.max(0, raised - GOAL_CENTS),
           total_with_match_cents: raised + matched,
           gift_count: byFund[f.id] ? byFund[f.id].gift_count : 0,
         };
@@ -298,7 +270,7 @@ app.get('/healthz', async (req, res) => {
   }
 });
 
-// ---------- Admin (manual gift entry and fund settings) ----------
+// ---------- Admin (manual gift entry) ----------
 function safeEqual(a, b) {
   const ha = crypto.createHash('sha256').update(String(a)).digest();
   const hb = crypto.createHash('sha256').update(String(b)).digest();
@@ -318,69 +290,30 @@ function requireAdmin(req, res, next) {
   res.status(401).send('Authentication required');
 }
 
-// Browsers resend Basic Auth on cross-site form posts, so admin writes must carry a header that only
-// the admin page's own fetch calls send (a cross-site page can't add one without a CORS preflight,
-// which this server never approves). The admin page also refuses to be framed, to prevent clickjacking.
-function adminGuard(req, res, next) {
-  res.set('X-Frame-Options', 'DENY');
-  res.set('Content-Security-Policy', "frame-ancestors 'none'");
-  if (req.method !== 'GET' && req.method !== 'HEAD' && req.get('x-requested-with') !== 'fetch') {
-    return res.status(403).json({ error: 'Request blocked.' });
-  }
-  next();
-}
-
-// Express 4 doesn't catch rejected promises; without this a database error would crash the process.
-const asyncRoute = (fn) => (req, res, next) => fn(req, res).catch(next);
-
-app.use('/admin', requireAdmin, adminGuard);
+app.use('/admin', requireAdmin);
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'admin', 'admin.html')));
 
-app.get('/admin/api/gifts', asyncRoute(async (req, res) => {
+app.get('/admin/api/gifts', async (req, res) => {
   const { rows } = await pool.query(
     `SELECT id, source, fund_id, amount_cents, refunded_cents, status, gift_date, note, entered_by
      FROM gifts WHERE livemode = $1 ORDER BY gift_date DESC, id DESC LIMIT 300`,
     [LIVEMODE]
   );
-  const settings = await loadFundSettings();
+  const campaign = await getCampaign();
   res.set('Cache-Control', 'no-store').json({
-    funds: FUNDS.map((f) => ({ id: f.id, name: f.name, color: f.color, ...settings[f.id] })),
+    funds: FUNDS.map((f) => ({ id: f.id, name: f.name })),
     campaign: {
-      start: CAMPAIGN_START.toISOString(),
-      end: CAMPAIGN_END ? CAMPAIGN_END.toISOString() : null,
+      start: campaign.start.toISOString(),
+      end: campaign.end ? campaign.end.toISOString() : null,
+      updated_by: campaign.updated_by,
+      updated_at: campaign.updated_at,
       livemode: LIVEMODE,
-      default_goal_cents: GOAL_CENTS,
     },
     gifts: rows,
   });
-}));
+});
 
-// Save one fund's display settings. `goal` is in dollars; empty means use the default.
-app.put('/admin/api/funds/:id', express.json({ limit: '2kb' }), asyncRoute(async (req, res) => {
-  const fund = fundById(req.params.id);
-  if (!fund) return res.status(404).json({ error: 'Fund not found.' });
-  const { show_progress, goal } = req.body || {};
-  if (typeof show_progress !== 'boolean') return res.status(400).json({ error: 'Choose whether to show progress.' });
-
-  let goalCents = null;
-  if (goal !== null && goal !== undefined && String(goal).trim() !== '') {
-    goalCents = Math.round(Number(goal) * 100);
-    if (!Number.isFinite(goalCents) || goalCents <= 0 || goalCents > MAX_GOAL_CENTS) {
-      return res.status(400).json({ error: 'Enter a match amount between $0.01 and $1,000,000.' });
-    }
-  }
-
-  await pool.query(
-    `INSERT INTO fund_settings (fund_id, show_progress, goal_cents) VALUES ($1, $2, $3)
-     ON CONFLICT (fund_id) DO UPDATE SET show_progress = EXCLUDED.show_progress, goal_cents = EXCLUDED.goal_cents, updated_at = now()`,
-    [fund.id, show_progress, goalCents]
-  );
-  console.log(`Fund settings changed: ${fund.id} show_progress=${show_progress} goal_cents=${goalCents ?? 'default'}`);
-  invalidateTotals();
-  res.json({ ok: true, ...(await loadFundSettings())[fund.id] });
-}));
-
-app.post('/admin/api/gifts', express.json({ limit: '10kb' }), asyncRoute(async (req, res) => {
+app.post('/admin/api/gifts', express.json({ limit: '10kb' }), async (req, res) => {
   const { fund_id, amount, gift_date, note, entered_by } = req.body || {};
   if (!fundById(fund_id)) return res.status(400).json({ error: 'Choose a fund.' });
 
@@ -399,41 +332,84 @@ app.post('/admin/api/gifts', express.json({ limit: '10kb' }), asyncRoute(async (
   );
   invalidateTotals();
   res.status(201).json({ id: rows[0].id });
-}));
+});
 
-app.post('/admin/api/gifts/:id/void', asyncRoute(async (req, res) => {
-  const id = Number(req.params.id);
-  if (!Number.isInteger(id) || id <= 0 || id > 2147483647) {
-    return res.status(404).json({ error: 'Manual gift not found or already voided.' });
-  }
+app.post('/admin/api/gifts/:id/void', async (req, res) => {
   const { rowCount } = await pool.query(
     `UPDATE gifts SET status = 'voided', updated_at = now()
      WHERE id = $1 AND source = 'manual' AND livemode = $2 AND status = 'paid'`,
-    [id, LIVEMODE]
+    [parseInt(req.params.id, 10), LIVEMODE]
   );
   if (!rowCount) return res.status(404).json({ error: 'Manual gift not found or already voided.' });
   invalidateTotals();
   res.json({ ok: true });
-}));
+});
+
+// Change the campaign window. Takes effect immediately on the public totals.
+app.put('/admin/api/campaign', express.json({ limit: '10kb' }), async (req, res) => {
+  const { start, end, changed_by } = req.body || {};
+  const newStart = new Date(start);
+  const newEnd = end ? new Date(end) : null;
+  if (!start || Number.isNaN(newStart.getTime())) return res.status(400).json({ error: 'Enter a valid start date and time.' });
+  if (end && Number.isNaN(newEnd.getTime())) return res.status(400).json({ error: 'Enter a valid end date and time, or leave it blank.' });
+  if (newEnd && newEnd <= newStart) return res.status(400).json({ error: 'The end must be after the start.' });
+  const who = String(changed_by || '').trim().slice(0, 80);
+  if (!who) return res.status(400).json({ error: 'Enter your name or initials.' });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query('SELECT start_at, end_at FROM campaign_settings WHERE id = 1 FOR UPDATE');
+    await client.query(
+      `INSERT INTO campaign_settings_log (old_start, old_end, new_start, new_end, changed_by) VALUES ($1, $2, $3, $4, $5)`,
+      [rows[0].start_at, rows[0].end_at, newStart, newEnd, who]
+    );
+    await client.query(
+      `UPDATE campaign_settings SET start_at = $1, end_at = $2, updated_by = $3, updated_at = now() WHERE id = 1`,
+      [newStart, newEnd, who]
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Campaign update failed:', err);
+    return res.status(500).json({ error: 'Dates were not saved. Try again.' });
+  } finally {
+    client.release();
+  }
+  campaignCache = null;
+  invalidateTotals();
+  console.log(`Campaign window changed by ${who}: ${newStart.toISOString()} to ${newEnd ? newEnd.toISOString() : 'no end'}`);
+  res.json({ ok: true });
+});
+
+app.get('/admin/api/campaign/log', async (req, res) => {
+  const { rows } = await pool.query(
+    'SELECT old_start, old_end, new_start, new_end, changed_by, changed_at FROM campaign_settings_log ORDER BY changed_at DESC LIMIT 50'
+  );
+  res.set('Cache-Control', 'no-store').json({ log: rows });
+});
 
 // ---------- Landing page ----------
 app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
 
-// Log the details; never send a stack trace to the browser.
-app.use((err, req, res, next) => {
-  if (res.headersSent) return next(err);
-  console.error(`${req.method} ${req.path} failed:`, err);
-  res.status(err.status || 500).json({ error: 'Something went wrong. Try again.' });
-});
-
 // ---------- Boot ----------
 (async () => {
   await pool.query(SCHEMA);
+  // Seed the campaign window once, from env vars if present. Later edits happen in /admin.
+  const seeded = await pool.query(
+    `INSERT INTO campaign_settings (id, start_at, end_at, updated_by)
+     VALUES (1, $1, $2, 'initial setup') ON CONFLICT (id) DO NOTHING RETURNING id`,
+    [ENV_START || new Date(), ENV_END]
+  );
+  const c = await getCampaign();
+  console.log(`Campaign window${seeded.rowCount ? ' (seeded from env)' : ''}: ${c.start.toISOString()} to ${c.end ? c.end.toISOString() : 'no end'}`);
   const port = process.env.PORT || 3000;
   app.listen(port, () => {
     console.log(`Match campaign running on :${port} in ${LIVEMODE ? 'LIVE' : 'TEST'} mode`);
     for (const f of FUNDS) {
       if (!f.linkId || !f.giveUrl) console.warn(`Warning: ${f.id} is missing its Payment Link ID or URL`);
+      if (f.giveUrl && !f.giveUrl.startsWith('https://')) console.warn(`Warning: ${f.id} URL should start with https:// (got "${f.giveUrl.slice(0, 20)}…")`);
+      if (f.linkId && !f.linkId.startsWith('plink_')) console.warn(`Warning: ${f.id} link ID should start with plink_ (got "${f.linkId.slice(0, 12)}…")`);
     }
   });
 })().catch((err) => {
