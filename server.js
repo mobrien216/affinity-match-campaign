@@ -88,10 +88,28 @@ CREATE TABLE IF NOT EXISTS fund_settings (
 CREATE TABLE IF NOT EXISTS fund_settings_log (
   id             SERIAL PRIMARY KEY,
   fund_id        TEXT NOT NULL,
-  show_progress  BOOLEAN NOT NULL,
+  show_progress  BOOLEAN,
   changed_by     TEXT NOT NULL,
   changed_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Upgrade older copies of the settings tables in place: CREATE TABLE IF NOT EXISTS skips a table
+-- that already exists, so add any columns this version needs. Safe to run on every startup.
+ALTER TABLE fund_settings ADD COLUMN IF NOT EXISTS show_progress BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE fund_settings ADD COLUMN IF NOT EXISTS updated_by TEXT;
+ALTER TABLE fund_settings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE fund_settings_log ADD COLUMN IF NOT EXISTS fund_id TEXT;
+ALTER TABLE fund_settings_log ADD COLUMN IF NOT EXISTS show_progress BOOLEAN;
+ALTER TABLE fund_settings_log ADD COLUMN IF NOT EXISTS changed_by TEXT;
+ALTER TABLE fund_settings_log ADD COLUMN IF NOT EXISTS changed_at TIMESTAMPTZ NOT NULL DEFAULT now();
+-- Per-fund match goal (NULL = use the GOAL_CENTS default) and a generic change log.
+ALTER TABLE fund_settings ADD COLUMN IF NOT EXISTS match_goal_cents INTEGER CHECK (match_goal_cents IS NULL OR match_goal_cents > 0);
+ALTER TABLE fund_settings_log ALTER COLUMN show_progress DROP NOT NULL;
+ALTER TABLE fund_settings_log ADD COLUMN IF NOT EXISTS setting TEXT;
+ALTER TABLE fund_settings_log ADD COLUMN IF NOT EXISTS old_value TEXT;
+ALTER TABLE fund_settings_log ADD COLUMN IF NOT EXISTS new_value TEXT;
+ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS updated_by TEXT;
+ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
 CREATE TABLE IF NOT EXISTS stripe_events (
   id          TEXT PRIMARY KEY,
@@ -109,7 +127,7 @@ const invalidateTotals = () => { totalsCache = { at: 0, body: null }; };
 let fundSettingsCache = null;
 async function getFundSettings() {
   if (fundSettingsCache) return fundSettingsCache;
-  const { rows } = await pool.query('SELECT fund_id, show_progress, updated_by, updated_at FROM fund_settings');
+  const { rows } = await pool.query('SELECT fund_id, show_progress, match_goal_cents, updated_by, updated_at FROM fund_settings');
   fundSettingsCache = Object.fromEntries(rows.map((r) => [r.fund_id, r]));
   return fundSettingsCache;
 }
@@ -261,16 +279,21 @@ app.get('/api/totals', async (req, res) => {
       },
       funds: FUNDS.map((f) => {
         const raised = Number(byFund[f.id] ? byFund[f.id].raised_cents : 0);
-        const matched = Math.min(raised, GOAL_CENTS);
-        const show = settings[f.id] ? settings[f.id].show_progress : true;
-        const base = { id: f.id, name: f.name, color: f.color, blurb: f.blurb, give_url: f.giveUrl, show_progress: show };
-        // When progress is hidden, the public API doesn't send the numbers at all.
-        if (!show) return base;
+        const st = settings[f.id] || {};
+        const goal = st.match_goal_cents || GOAL_CENTS;
+        const matched = Math.min(raised, goal);
         return {
-          ...base,
+          id: f.id,
+          name: f.name,
+          color: f.color,
+          blurb: f.blurb,
+          give_url: f.giveUrl,
+          // false hides only the progress bar; the amounts and status lines still show.
+          show_progress: st.show_progress !== false,
+          goal_cents: goal,
           raised_cents: raised,
           matched_cents: matched,
-          over_goal_cents: Math.max(0, raised - GOAL_CENTS),
+          over_goal_cents: Math.max(0, raised - goal),
           total_with_match_cents: raised + matched,
           gift_count: byFund[f.id] ? byFund[f.id].gift_count : 0,
         };
@@ -332,6 +355,7 @@ app.get('/admin/api/gifts', wrap(async (req, res) => {
       id: f.id,
       name: f.name,
       show_progress: settings[f.id] ? settings[f.id].show_progress : true,
+      match_goal_cents: (settings[f.id] && settings[f.id].match_goal_cents) || GOAL_CENTS,
       settings_updated_by: settings[f.id] ? settings[f.id].updated_by : null,
       settings_updated_at: settings[f.id] ? settings[f.id].updated_at : null,
     })),
@@ -415,26 +439,49 @@ app.put('/admin/api/campaign', express.json({ limit: '10kb' }), wrap(async (req,
   res.json({ ok: true });
 }));
 
-// Show or hide a fund's progress (amount, bar, and status lines) on the public page.
+// Change a fund's display and match settings. Body may include show_progress (boolean)
+// and/or match_goal (dollars). Each change is logged with who made it.
 app.put('/admin/api/funds/:id', express.json({ limit: '10kb' }), wrap(async (req, res) => {
   const fund = fundById(req.params.id);
   if (!fund) return res.status(404).json({ error: 'Unknown fund.' });
-  const { show_progress, changed_by } = req.body || {};
-  if (typeof show_progress !== 'boolean') return res.status(400).json({ error: 'show_progress must be true or false.' });
+  const { show_progress, match_goal, changed_by } = req.body || {};
   const who = String(changed_by || '').trim().slice(0, 80);
   if (!who) return res.status(400).json({ error: 'Enter your name or initials first.' });
+
+  const changes = [];
+  if (show_progress !== undefined) {
+    if (typeof show_progress !== 'boolean') return res.status(400).json({ error: 'show_progress must be true or false.' });
+    changes.push({ setting: 'show_progress', column: 'show_progress', value: show_progress });
+  }
+  if (match_goal !== undefined) {
+    const cents = Math.round(Number(match_goal) * 100);
+    if (!Number.isFinite(cents) || cents < 100 || cents > 1000000000) {
+      return res.status(400).json({ error: 'Enter a match amount between $1 and $10,000,000.' });
+    }
+    changes.push({ setting: 'match_goal', column: 'match_goal_cents', value: cents });
+  }
+  if (!changes.length) return res.status(400).json({ error: 'Nothing to change.' });
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query(
-      `UPDATE fund_settings SET show_progress = $1, updated_by = $2, updated_at = now() WHERE fund_id = $3`,
-      [show_progress, who, fund.id]
+    const { rows } = await client.query(
+      'SELECT show_progress, match_goal_cents FROM fund_settings WHERE fund_id = $1 FOR UPDATE', [fund.id]
     );
-    await client.query(
-      `INSERT INTO fund_settings_log (fund_id, show_progress, changed_by) VALUES ($1, $2, $3)`,
-      [fund.id, show_progress, who]
-    );
+    const before = rows[0] || {};
+    for (const c of changes) {
+      const oldVal = c.column === 'match_goal_cents' ? (before.match_goal_cents || GOAL_CENTS) : before[c.column];
+      // column names come from the fixed list above, never from the request
+      await client.query(
+        `UPDATE fund_settings SET ${c.column} = $1, updated_by = $2, updated_at = now() WHERE fund_id = $3`,
+        [c.value, who, fund.id]
+      );
+      await client.query(
+        `INSERT INTO fund_settings_log (fund_id, setting, old_value, new_value, show_progress, changed_by)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [fund.id, c.setting, String(oldVal), String(c.value), c.setting === 'show_progress' ? c.value : null, who]
+      );
+    }
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
@@ -445,8 +492,17 @@ app.put('/admin/api/funds/:id', express.json({ limit: '10kb' }), wrap(async (req
   }
   fundSettingsCache = null;
   invalidateTotals();
-  console.log(`${fund.id} progress ${show_progress ? 'shown' : 'hidden'} by ${who}`);
+  console.log(`${fund.id} settings changed by ${who}: ${changes.map((c) => `${c.setting}=${c.value}`).join(', ')}`);
   res.json({ ok: true });
+}));
+
+app.get('/admin/api/funds/log', wrap(async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT fund_id, COALESCE(setting, 'show_progress') AS setting,
+            COALESCE(new_value, show_progress::text) AS new_value, old_value, changed_by, changed_at
+     FROM fund_settings_log ORDER BY changed_at DESC LIMIT 100`
+  );
+  res.set('Cache-Control', 'no-store').json({ log: rows });
 }));
 
 app.get('/admin/api/campaign/log', wrap(async (req, res) => {
