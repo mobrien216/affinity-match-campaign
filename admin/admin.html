@@ -5,40 +5,80 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <title>Match campaign admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
-  :root { --ink:#17212E; --soft:#4A5566; --wash:#F2F4F6; --rule:#D9DEE4; --accent:#1A5FB4; --bad:#8A1C1C; }
-  * { box-sizing: border-box; }
-  body { margin:0; font-family:"Source Sans 3", system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--ink); line-height:1.45; }
-  main { max-width: 980px; margin: 0 auto; padding: 32px 24px 64px; }
-  h1 { margin: 0 0 4px; font-size: 1.75rem; }
-  .mode { color: var(--soft); margin: 0 0 28px; }
-  form { display:grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap:14px; padding:20px; background:var(--wash); align-items:end; }
-  label { display:flex; flex-direction:column; gap:4px; font-weight:600; font-size:.9375rem; }
-  input, select { font:inherit; padding:8px 10px; border:1px solid var(--rule); border-radius:4px; background:#fff; }
-  button { font:inherit; font-weight:700; padding:9px 16px; border:0; border-radius:4px; background:var(--accent); color:#fff; cursor:pointer; }
-  button.link { background:none; color:var(--bad); padding:0; font-weight:600; text-decoration:underline; }
-  :focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
-  .hint { grid-column:1/-1; margin:0; color:var(--soft); font-size:.9375rem; }
-  h2 { margin: 32px 0 12px; font-size: 1.25rem; }
-  #campaignForm { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
-  .window-status { display:inline-block; margin-left:8px; padding:2px 10px; border-radius:999px; font-size:.8125rem; font-weight:700; background:var(--rule); }
-  .window-status.open { background:#D8EEDF; color:#0B5A36; }
-  .window-status.closed { background:#F6DADF; color:var(--bad); }
-  details { margin-top: 12px; }
-  summary { cursor:pointer; font-weight:600; color:var(--soft); }
-  #msg { min-height:1.5em; margin:12px 0 24px; font-weight:600; }
-  #msg.err { color:var(--bad); }
-  .table-wrap { overflow-x:auto; }
-  table { width:100%; border-collapse:collapse; font-size:.9375rem; }
-  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--rule); white-space:nowrap; }
+  /* Tokens from the TCF component library (tcf-component-library-v3) */
+  :root{
+    --green:#164430; --mid:#086C43; --orange:#EE7331; --red:#CB1E4B;
+    --white:#FFFFFF; --gray1:#F3F2F0; --gray2:#E8EAE5; --gray3:#DEE2DB; --label:#4F7A63;
+    --head:'Paralucent','Aptos',system-ui,-apple-system,'Segoe UI',sans-serif;
+    --body:'Source Sans 3','Source Sans Pro','Aptos',system-ui,-apple-system,'Segoe UI',sans-serif;
+    --r:4px; --r-btn:6px; --focus:0 0 0 2px var(--white),0 0 0 4px var(--orange);
+    --ease:cubic-bezier(.2,.8,.2,1); --t-fast:150ms;
+    --gutter:clamp(20px,4.5vw,56px);
+  }
+  @media (prefers-reduced-motion: reduce){ :root{ --t-fast:0ms; } }
+  @font-face{font-family:'Paralucent';src:url('/fonts/paralucent-bold.woff2') format('woff2'),url('/fonts/paralucent-bold.woff') format('woff');font-weight:600 900;font-style:normal;font-display:swap}
+
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:var(--body); font-size:16px; line-height:1.5; color:var(--green); background:var(--gray1); -webkit-font-smoothing:antialiased; }
+  h1, h2 { font-family:var(--head); font-weight:700; letter-spacing:-.01em; margin:0; }
+  :focus-visible { outline:none; box-shadow:var(--focus); }
+
+  .bar { background:var(--green); color:var(--white); }
+  .bar .inner { max-width:1080px; margin:0 auto; padding:20px var(--gutter) 28px; }
+  .brand-logo { display:block; aspect-ratio:800/257; height:30px; background:var(--white); -webkit-mask:url('/tcf-logo.png') no-repeat left center/contain; mask:url('/tcf-logo.png') no-repeat left center/contain; margin-bottom:24px; }
+  .eyebrow { font-weight:600; font-size:13px; letter-spacing:.12em; text-transform:uppercase; color:var(--gray2); margin:0 0 6px; }
+  h1 { font-size:clamp(28px,3vw,36px); line-height:1.1; }
+  .bar .mode { color:var(--gray2); margin:10px 0 0; }
+
+  main { max-width:1080px; margin:0 auto; padding:32px var(--gutter) 64px; }
+  section.panel { background:var(--white); border:1px solid var(--gray3); border-top:3px solid var(--mid); border-radius:var(--r); padding:24px; margin-bottom:24px; }
+  h2 { font-size:22px; line-height:1.2; margin:0 0 16px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+
+  form { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:16px; align-items:end; }
+  #campaignForm { grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); }
+  label { display:flex; flex-direction:column; gap:6px; font-weight:600; font-size:13px; letter-spacing:.06em; text-transform:uppercase; color:var(--label); }
+  input, select { font:inherit; font-size:16px; letter-spacing:0; text-transform:none; color:var(--green); min-height:44px; padding:8px 12px; border:1.5px solid var(--gray3); border-radius:var(--r); background:var(--white); transition:border-color var(--t-fast) var(--ease); }
+  input:hover, select:hover { border-color:var(--label); }
+  input:focus-visible, select:focus-visible { border-color:var(--green); }
+  button { font:inherit; font-weight:700; font-size:16px; min-height:44px; padding:0 22px; border:1.5px solid var(--green); border-radius:var(--r-btn); background:var(--green); color:var(--white); cursor:pointer; transition:background-color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease); }
+  button:hover { background:var(--mid); border-color:var(--mid); }
+  button.link { background:none; border:0; min-height:0; padding:0; color:var(--red); font-weight:700; text-decoration:underline; }
+  .hint { grid-column:1/-1; margin:0; color:var(--label); font-size:14px; line-height:1.45; }
+  .mode { color:var(--label); font-size:14px; margin:12px 0 0; }
+  #msg, #campaignMsg { min-height:1.5em; margin:12px 0 0; font-weight:700; color:var(--mid); }
+  #msg.err, #campaignMsg.err { color:var(--red); }
+
+  .window-status { display:inline-block; padding:3px 12px; border-radius:999px; font-family:var(--body); font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; background:var(--gray2); color:var(--label); }
+  .window-status.open { background:#DCEFE3; color:var(--mid); }
+  .window-status.closed { background:#F8DDE3; color:var(--red); }
+
+  details { margin-top:16px; border-top:1px solid var(--gray3); padding-top:12px; }
+  summary { cursor:pointer; font-weight:700; color:var(--green); }
+
+  .table-wrap { overflow-x:auto; margin-top:8px; }
+  table { width:100%; border-collapse:collapse; font-size:15px; }
+  th { text-align:left; padding:10px 12px; font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--label); border-bottom:2px solid var(--gray3); white-space:nowrap; }
+  td { padding:10px 12px; border-bottom:1px solid var(--gray3); white-space:nowrap; }
+  tbody tr:nth-child(even) td { background:var(--gray1); }
   td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
-  tr.inactive td { color:var(--soft); text-decoration:line-through; }
+  tr.inactive td { color:var(--label); text-decoration:line-through; }
 </style>
 </head>
 <body>
+<header class="bar">
+  <div class="inner">
+    <span class="brand-logo" role="img" aria-label="The Cleveland Foundation"></span>
+    <p class="eyebrow">Affinity Funds match</p>
+    <h1>Match campaign admin</h1>
+    <p class="mode" id="mode">Loading…</p>
+  </div>
+</header>
 <main>
-  <h1>Match campaign admin</h1>
-  <p class="mode" id="mode">Loading…</p>
+  <section class="panel">
 
   <h2>Campaign dates <span class="window-status" id="windowStatus"></span></h2>
   <form id="campaignForm">
@@ -66,6 +106,9 @@
     </div>
   </details>
 
+  </section>
+
+  <section class="panel">
   <h2>Add a manual gift</h2>
   <form id="form">
     <label>Fund
@@ -88,6 +131,9 @@
   </form>
   <p id="msg" role="status" aria-live="polite"></p>
 
+  </section>
+
+  <section class="panel">
   <h2>Recent gifts</h2>
   <div class="table-wrap">
     <table>
@@ -95,6 +141,7 @@
       <tbody id="rows"></tbody>
     </table>
   </div>
+  </section>
 </main>
 <script>
 (() => {
