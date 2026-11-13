@@ -131,7 +131,7 @@
 
   <section class="panel">
   <h2>Funds</h2>
-  <p class="hint">Set each fund's match goal and choose whether its progress bar shows on the public page. Turning the bar off hides only the bar; the amount raised, the goal, and the status lines still show, and gifts keep counting. Changes appear on the public page within a few seconds.</p>
+  <p class="hint">Set each fund's match goal and choose whether its progress shows on the public page. Turning progress off hides the amount raised, the progress bar, and the to-go and total lines; the card shows the fund's match goal and Give button instead. Gifts keep counting in the background, so turning it back on shows the up-to-date total. Changes appear on the public page within a few seconds.</p>
   <div class="by-row">
     <label>Changed by
       <input id="displayBy" maxlength="80" placeholder="Your initials">
@@ -292,8 +292,8 @@
         </span>
         <label class="switch">
           <input type="checkbox" role="switch" data-fund="${esc(f.id)}" ${f.show_progress ? 'checked' : ''}
-                 aria-label="Show the progress bar for the ${esc(f.name)}">
-          <span>${f.show_progress ? 'Progress bar shown' : 'Progress bar hidden'}</span>
+                 aria-label="Show progress for the ${esc(f.name)}">
+          <span>${f.show_progress ? 'Progress shown' : 'Progress hidden'}</span>
         </label>
         <span class="meta">${f.settings_updated_by ? `Last changed by ${esc(f.settings_updated_by)} on ${esc(easternLabel(f.settings_updated_at))}` : 'Using defaults'}</span>
       </div>`).join('');
@@ -353,12 +353,12 @@
     const ok = await saveFund(box.dataset.fund, { show_progress: show }, () => { box.checked = !show; });
     box.disabled = false;
     if (ok) {
-      $('displayMsg').textContent = `${fundNames[box.dataset.fund]}: progress bar ${show ? 'shown' : 'hidden'} on the public page.`;
+      $('displayMsg').textContent = `${fundNames[box.dataset.fund]}: progress ${show ? 'shown' : 'hidden'} on the public page.`;
       load();
     }
   });
 
-  const SETTING_LABELS = { show_progress: 'Progress bar', match_goal: 'Match goal' };
+  const SETTING_LABELS = { show_progress: 'Progress', match_goal: 'Match goal' };
   function fmtSetting(setting, v) {
     if (v === null || v === undefined || v === '') return '';
     if (setting === 'match_goal') return '$' + Math.round(Number(v) / 100).toLocaleString('en-US');
