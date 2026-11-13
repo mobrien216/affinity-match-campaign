@@ -113,7 +113,7 @@
       <input name="changed_by" maxlength="80" required placeholder="Your initials">
     </label>
     <button type="submit">Save dates</button>
-    <p class="hint" id="campaignHint">Only gifts inside these dates count toward the bars. Give buttons keep working before and after; gifts outside the window still go to the funds but aren't added to the totals. Leave End blank for no end date. Changes take effect on the public page within a few seconds.</p>
+    <p class="hint" id="campaignHint">Only gifts inside these dates count toward the bars. Give buttons keep working before and after; gifts outside the window still go to the funds but aren't added to the totals. Leave End blank for no end date. Changes reach the public page within about 30 seconds.</p>
   </form>
   <p id="lastChanged" class="mode"></p>
   <p id="campaignMsg" role="status" aria-live="polite"></p>
@@ -131,7 +131,7 @@
 
   <section class="panel">
   <h2>Funds</h2>
-  <p class="hint">Set each fund's match goal and choose whether its progress shows on the public page. Turning progress off hides the amount raised, the progress bar, and the to-go and total lines; the card shows the fund's match goal and Give button instead. Gifts keep counting in the background, so turning it back on shows the up-to-date total. Changes appear on the public page within a few seconds.</p>
+  <p class="hint">Set each fund's match goal and choose whether its progress shows on the public page. Turning progress off hides the amount raised, the progress bar, and the to-go and total lines; the card shows the fund's match goal and Give button instead. Gifts keep counting in the background, so turning it back on shows the up-to-date total. Changes reach the public page within about 30 seconds.</p>
   <div class="by-row">
     <label>Changed by
       <input id="displayBy" maxlength="80" placeholder="Your initials">
@@ -192,6 +192,19 @@
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
   let fundNames = {};
 
+  // Every admin call goes through here. The X-Requested-With header is what the server checks to block
+  // cross-site form posts, so writes made any other way are refused.
+  async function api(url, { method = 'GET', body } = {}) {
+    const res = await fetch(url, {
+      method,
+      cache: 'no-store',
+      headers: { 'X-Requested-With': 'fetch', ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, data };
+  }
+
   // ---- Eastern time helpers (the campaign runs on Eastern time regardless of the viewer's computer) ----
   const TZ = 'America/New_York';
   function easternOffsetMinutes(date) {
@@ -227,11 +240,11 @@
   function say(text, isErr) { $('msg').textContent = text; $('msg').className = isErr ? 'err' : ''; }
 
   async function load() {
-    let res, data;
+    let data;
     try {
-      res = await fetch('/admin/api/gifts', { cache: 'no-store' });
-      data = await res.json();
-      if (!res.ok || !data.funds) throw new Error((data && data.error) || `HTTP ${res.status}`);
+      const r = await api('/admin/api/gifts');
+      data = r.data;
+      if (!r.ok || !data.funds) throw new Error(data.error || `HTTP ${r.status}`);
     } catch (err) {
       // Show the problem at the top, where it can't be missed.
       $('loadError').textContent = `Admin data didn't load (${err.message}). The dates, fund toggles, and gift list need it. Check that the latest server.js is deployed in Render, then refresh.`;
@@ -266,7 +279,7 @@
     $('rows').innerHTML = data.gifts.map((g) => {
       const inactive = g.status !== 'paid' || g.refunded_cents >= g.amount_cents;
       return `<tr class="${inactive ? 'inactive' : ''}">
-        <td>${new Date(g.gift_date).toLocaleDateString('en-US')}</td>
+        <td>${new Date(g.gift_date).toLocaleDateString('en-US', { timeZone: TZ })}</td>
         <td>${esc(fundNames[g.fund_id] || g.fund_id)}</td>
         <td class="num">${money(g.amount_cents)}</td>
         <td class="num">${g.refunded_cents ? money(g.refunded_cents) : ''}</td>
@@ -279,15 +292,14 @@
     }).join('') || '<tr><td colspan="9">No gifts yet.</td></tr>';
   }
 
-  const FUND_COLORS = { fund_a: '#EE7331', fund_b: '#1A8DA9', fund_c: '#C0629A' };
   function renderToggles(funds) {
     $('fundToggles').innerHTML = funds.map((f) => `
       <div class="toggle-row">
-        <span class="name"><span class="dot" style="background:${FUND_COLORS[f.id] || 'var(--gray3)'}"></span>${esc(f.name)}</span>
+        <span class="name"><span class="dot" style="background:${/^#[0-9a-fA-F]{6}$/.test(f.color || '') ? f.color : 'var(--gray3)'}"></span>${esc(f.name)}</span>
         <span class="goal-edit">
           <span class="prefix" aria-hidden="true">$</span>
           <input type="number" min="1" step="1" inputmode="numeric" data-goal-for="${esc(f.id)}"
-                 value="${Math.round((f.match_goal_cents || 0) / 100)}" aria-label="Match goal for the ${esc(f.name)}, in dollars">
+                 value="${Math.round(f.goal_cents / 100)}" aria-label="Match goal for the ${esc(f.name)}, in dollars">
           <button type="button" data-save-goal="${esc(f.id)}">Save goal</button>
         </span>
         <label class="switch">
@@ -295,31 +307,19 @@
                  aria-label="Show progress for the ${esc(f.name)}">
           <span>${f.show_progress ? 'Progress shown' : 'Progress hidden'}</span>
         </label>
-        <span class="meta">${f.settings_updated_by ? `Last changed by ${esc(f.settings_updated_by)} on ${esc(easternLabel(f.settings_updated_at))}` : 'Using defaults'}</span>
+        <span class="meta">${f.updated_by ? `Last changed by ${esc(f.updated_by)} on ${esc(easternLabel(f.updated_at))}` : 'Using defaults'}</span>
       </div>`).join('');
   }
 
+  // Returns true when saved. Shows its own error message and calls onFail otherwise.
   async function saveFund(fundId, body, onFail) {
     const msg = $('displayMsg');
+    const fail = (text) => { onFail && onFail(); msg.textContent = text; msg.className = 'err'; return false; };
     const who = $('displayBy').value.trim();
-    if (!who) {
-      onFail && onFail();
-      msg.textContent = 'Enter your initials in "Changed by" first.';
-      msg.className = 'err';
-      $('displayBy').focus();
-      return false;
-    }
-    const res = await fetch(`/admin/api/funds/${encodeURIComponent(fundId)}`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...body, changed_by: who }),
-    });
-    const out = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      onFail && onFail();
-      msg.textContent = out.error || 'Setting was not saved.';
-      msg.className = 'err';
-      return false;
-    }
+    if (!who) { $('displayBy').focus(); return fail('Enter your initials in "Changed by" first.'); }
+    const r = await api(`/admin/api/funds/${encodeURIComponent(fundId)}`, { method: 'PUT', body: { ...body, changed_by: who } })
+      .catch(() => ({ ok: false, data: {} }));
+    if (!r.ok) return fail(r.data.error || 'Setting was not saved.');
     msg.className = '';
     return true;
   }
@@ -366,9 +366,9 @@
     return v;
   }
   async function loadFundLog() {
-    const res = await fetch('/admin/api/funds/log', { cache: 'no-store' });
-    if (!res.ok) return;
-    const { log } = await res.json();
+    const r = await api('/admin/api/funds/log').catch(() => ({ ok: false }));
+    if (!r.ok) return;
+    const { log } = r.data;
     $('fundLogRows').innerHTML = log.map((r) => `<tr>
       <td>${esc(easternLabel(r.changed_at))}</td><td>${esc(r.changed_by)}</td>
       <td>${esc(fundNames[r.fund_id] || r.fund_id)}</td><td>${esc(SETTING_LABELS[r.setting] || r.setting)}</td>
@@ -377,9 +377,9 @@
   }
 
   async function loadLog() {
-    const res = await fetch('/admin/api/campaign/log', { cache: 'no-store' });
-    if (!res.ok) return;
-    const { log } = await res.json();
+    const r = await api('/admin/api/campaign/log').catch(() => ({ ok: false }));
+    if (!r.ok) return;
+    const { log } = r.data;
     $('logRows').innerHTML = log.map((r) => `<tr>
       <td>${easternLabel(r.changed_at)}</td><td>${esc(r.changed_by)}</td>
       <td>${r.old_start ? esc(easternLabel(r.old_start) + ' to ' + easternLabel(r.old_end)) : ''}</td>
@@ -394,12 +394,9 @@
     const end = easternInputToIso(f.end.value);
     const msg = $('campaignMsg');
     if (!confirm(`Set the campaign window to ${easternLabel(start)} through ${easternLabel(end)}?\n\nThis changes which gifts count toward the public totals immediately.`)) return;
-    const res = await fetch('/admin/api/campaign', {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ start, end, changed_by: f.changed_by.value }),
-    });
-    const out = await res.json().catch(() => ({}));
-    if (!res.ok) { msg.textContent = out.error || 'Dates were not saved.'; msg.className = 'err'; return; }
+    const r = await api('/admin/api/campaign', { method: 'PUT', body: { start, end, changed_by: f.changed_by.value } })
+      .catch(() => ({ ok: false, data: {} }));
+    if (!r.ok) { msg.textContent = r.data.error || 'Dates were not saved.'; msg.className = 'err'; return; }
     msg.textContent = `Saved. Window is now ${easternLabel(start)} to ${easternLabel(end)}.`;
     msg.className = '';
     campaignLoaded = false;
@@ -409,13 +406,10 @@
   $('form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const body = Object.fromEntries(new FormData(e.target));
-    // Noon local time avoids the date shifting a day when converted to UTC.
-    body.gift_date = body.gift_date + 'T12:00:00';
-    const res = await fetch('/admin/api/gifts', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    });
-    const out = await res.json().catch(() => ({}));
-    if (!res.ok) return say(out.error || 'Gift was not added.', true);
+    // Noon Eastern on the chosen day, so the date never shifts a day whatever the computer's time zone.
+    body.gift_date = easternInputToIso(body.gift_date + 'T12:00:00');
+    const r = await api('/admin/api/gifts', { method: 'POST', body }).catch(() => ({ ok: false, data: {} }));
+    if (!r.ok) return say(r.data.error || 'Gift was not added.', true);
     say(`Added ${money(Math.round(Number(body.amount) * 100))} to the ${fundNames[body.fund_id]}.`);
     e.target.amount.value = '';
     e.target.note.value = '';
@@ -425,8 +419,8 @@
   $('rows').addEventListener('click', async (e) => {
     const id = e.target.dataset.void;
     if (!id || !confirm('Void this manual gift? It will no longer count toward the total.')) return;
-    const res = await fetch(`/admin/api/gifts/${id}/void`, { method: 'POST' });
-    if (!res.ok) return say('Gift was not voided.', true);
+    const r = await api(`/admin/api/gifts/${encodeURIComponent(id)}/void`, { method: 'POST' }).catch(() => ({ ok: false, data: {} }));
+    if (!r.ok) return say(r.data.error || 'Gift was not voided.', true);
     say('Gift voided.');
     load();
   });
