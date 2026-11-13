@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Double your gift to the Affinity Funds | The Cleveland Foundation</title>
-<meta name="description" content="Gifts to the Black Philanthropy Fund, Latino Impacto Fund, and LGBTQ+ Opportunity Fund are matched dollar for dollar.">
+<meta name="description" content="Gifts to the Black Philanthropy Fund, Latino Impacto Fund, and LGBTQ+ Opportunity Fund are matched dollar for dollar, up to $10,000 per fund.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&display=swap" rel="stylesheet">
@@ -80,7 +80,6 @@ a{color:inherit}
 .fund-card.reached .track i{background:var(--mid)}
 
 .status{margin-top:var(--space-3);font-weight:700;line-height:1.45}
-.status.match-only{margin-top:var(--space-5)}
 .impact{margin-top:4px;font-size:16px;line-height:1.45;font-variant-numeric:tabular-nums}
 .match-note{margin-top:4px;font-size:var(--fs-caption);line-height:1.45;color:var(--label)}
 
@@ -102,7 +101,7 @@ a{color:inherit}
       <span class="brand-logo white" role="img" aria-label="The Cleveland Foundation"></span>
       <p class="t-sub">Affinity Funds match</p>
       <h1>Double your gift to the Affinity Funds</h1>
-      <p id="hero-copy">Every dollar given to the funds below is matched dollar for dollar. Choose a fund to help it reach the full match.</p>
+      <p>Every dollar given to the funds below is matched dollar for dollar, up to $10,000 per fund. Choose a fund to help it reach the full match.</p>
     </div>
   </header>
 
@@ -138,24 +137,22 @@ a{color:inherit}
     return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
-  function cardHtml(f) {
-    const goal = f.goal_cents;
-    const head = (extraClass = '') => `
-      <article class="fund-card${extraClass}" id="${escapeHtml(f.id)}"${/^#[0-9a-fA-F]{6}$/.test(f.color || '') ? ` style="--fund:${f.color}"` : ''}>
+  function cardHtml(f, goal) {
+    const style = /^#[0-9a-fA-F]{6}$/.test(f.color || '') ? ` style="--fund:${f.color}"` : '';
+    const giveBtn = f.give_url
+      ? `<a class="btn btn-primary" href="${escapeHtml(f.give_url)}" aria-label="Give to the ${escapeHtml(f.name)}">Give to this fund</a>`
+      : `<a class="btn" aria-disabled="true">Giving link coming soon</a>`;
+
+    // Progress turned off in /admin: show the fund and its Give button only.
+    if (f.show_progress === false) {
+      return `
+      <article class="fund-card" id="${escapeHtml(f.id)}"${style}>
         <p class="t-sub">Affinity Fund</p>
         <h2>${escapeHtml(f.name)}</h2>
-        ${f.blurb ? `<p class="blurb">${escapeHtml(f.blurb)}</p>` : ''}`;
-    const give = `
+        ${f.blurb ? `<p class="blurb">${escapeHtml(f.blurb)}</p>` : ''}
         <div class="btn-gap"></div>
-        ${f.give_url
-          ? `<a class="btn btn-primary" href="${escapeHtml(f.give_url)}" aria-label="Give to the ${escapeHtml(f.name)}">Give to this fund</a>`
-          : `<a class="btn" aria-disabled="true">Giving link coming soon</a>`}
+        ${giveBtn}
       </article>`;
-
-    // Progress turned off on the admin page: no figures or bar, just the match amount.
-    if (!f.show_progress) {
-      return `${head()}
-        <p class="status match-only">Gifts are matched dollar for dollar, up to ${dollars(goal)}.</p>${give}`;
     }
 
     const pct = Math.min(100, (f.raised_cents / goal) * 100);
@@ -170,7 +167,11 @@ a{color:inherit}
     else if (reached) status = 'Goal reached';
     else status = `${dollars(toGo)} to go to unlock the full match`;
 
-    return `${head(reached ? ' reached' : '')}
+    return `
+      <article class="fund-card${reached ? ' reached' : ''}" id="${escapeHtml(f.id)}"${/^#[0-9a-fA-F]{6}$/.test(f.color || '') ? ` style="--fund:${f.color}"` : ''}>
+        <p class="t-sub">Affinity Fund</p>
+        <h2>${escapeHtml(f.name)}</h2>
+        ${f.blurb ? `<p class="blurb">${escapeHtml(f.blurb)}</p>` : ''}
         <div class="figure">
           <strong>${dollars(f.raised_cents)}</strong>
           <span>of ${dollars(goal)} goal</span>
@@ -182,25 +183,21 @@ a{color:inherit}
         </div>
         <p class="status">${status}</p>
         <p class="impact">${dollars(f.total_with_match_cents)} total with the match</p>
-        ${over ? `<p class="match-note">The first ${dollars(goal)} raised for this fund is matched.</p>` : ''}${give}`;
-  }
-
-  // Name the match amount in the hero only when every fund has the same one.
-  function heroCopy(funds) {
-    const goals = new Set(funds.map((f) => f.goal_cents));
-    const limit = goals.size === 1 ? `, up to ${dollars(funds[0].goal_cents)} per fund` : ', up to the amount shown for each fund';
-    return `Every dollar given to the funds below is matched dollar for dollar${limit}. Choose a fund to help it reach the full match.`;
+        ${over ? `<p class="match-note">The first ${dollars(goal)} raised for this fund is matched.</p>` : ''}
+        <div class="btn-gap"></div>
+        ${giveBtn}
+      </article>`;
   }
 
   function render(data) {
+    const goal = data.campaign.goal_cents;
     const prevPct = {};
     fundsEl.querySelectorAll('.fund-card').forEach((el) => {
       const fill = el.querySelector('.track i');
       prevPct[el.id] = fill ? fill.style.width : '0%';
     });
 
-    fundsEl.innerHTML = data.funds.map(cardHtml).join('');
-    document.getElementById('hero-copy').textContent = heroCopy(data.funds);
+    fundsEl.innerHTML = data.funds.map((f) => cardHtml(f, goal)).join('');
 
     // Start each bar where it was, then animate to the new width.
     fundsEl.querySelectorAll('.fund-card').forEach((el) => {
