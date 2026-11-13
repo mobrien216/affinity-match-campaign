@@ -38,21 +38,20 @@ function fundById(id) {
 }
 
 // Which fund a Checkout Session belongs to.
-// 1) The Payment Link ID is the source of truth (set in env, can't be mistyped in the Dashboard).
-// 2) Fall back to the fund_id metadata copied from the Payment Link onto the session.
-// Sessions from any other link return null and are ignored.
+// The Payment Link ID (set in env) is the source of truth. If a session came from a
+// Payment Link that is NOT one of the three campaign links, it doesn't count, even if
+// that link carries the same fund_id metadata (e.g. older links still posted elsewhere).
+// The fund_id metadata is only used for sessions that didn't come from a Payment Link.
 function fundForSession(session) {
+  const meta = session.metadata && session.metadata.fund_id;
   if (session.payment_link) {
     const byLink = FUNDS.find((f) => f.linkId && f.linkId === session.payment_link);
-    if (byLink) {
-      const meta = session.metadata && session.metadata.fund_id;
-      if (meta && meta !== byLink.id) {
-        console.warn(`Session ${session.id}: metadata fund_id "${meta}" disagrees with link mapping "${byLink.id}". Using link mapping.`);
-      }
-      return byLink;
+    if (!byLink) return null;
+    if (meta && meta !== byLink.id) {
+      console.warn(`Session ${session.id}: metadata fund_id "${meta}" disagrees with link mapping "${byLink.id}". Using link mapping.`);
     }
+    return byLink;
   }
-  const meta = session.metadata && session.metadata.fund_id;
   return meta ? fundById(meta) : null;
 }
 
