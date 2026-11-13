@@ -56,6 +56,20 @@
   .window-status.open { background:#DCEFE3; color:var(--mid); }
   .window-status.closed { background:#F8DDE3; color:var(--red); }
 
+  .toggles { display:grid; gap:0; margin-top:16px; border-top:1px solid var(--gray3); }
+  .toggle-row { display:grid; grid-template-columns:1fr auto; gap:4px 16px; align-items:center; padding:14px 0; border-bottom:1px solid var(--gray3); }
+  .toggle-row .name { font-weight:700; display:flex; align-items:center; gap:10px; }
+  .toggle-row .dot { width:12px; height:12px; border-radius:2px; flex:none; }
+  .toggle-row .meta { grid-column:1/-1; font-size:13px; color:var(--label); }
+  .switch { display:inline-flex; flex-direction:row; align-items:center; gap:10px; font-size:14px; font-weight:700; letter-spacing:0; text-transform:none; color:var(--green); cursor:pointer; }
+  .switch input { appearance:none; -webkit-appearance:none; width:46px; height:26px; min-height:0; padding:0; margin:0; border:0; border-radius:999px; background:var(--gray3); position:relative; cursor:pointer; transition:background-color var(--t-fast) var(--ease); }
+  .switch input::after { content:""; position:absolute; top:3px; left:3px; width:20px; height:20px; border-radius:50%; background:var(--white); box-shadow:0 1px 2px rgba(0,0,0,.25); transition:transform var(--t-fast) var(--ease); }
+  .switch input:checked { background:var(--mid); }
+  .switch input:checked::after { transform:translateX(20px); }
+  .switch input:disabled { opacity:.5; cursor:wait; }
+  #displayMsg { min-height:1.5em; margin:12px 0 0; font-weight:700; color:var(--mid); }
+  #displayMsg.err { color:var(--red); }
+  .by-row { display:grid; grid-template-columns:minmax(180px, 260px); margin-top:16px; }
   details { margin-top:16px; border-top:1px solid var(--gray3); padding-top:12px; }
   summary { cursor:pointer; font-weight:700; color:var(--green); }
 
@@ -106,6 +120,18 @@
     </div>
   </details>
 
+  </section>
+
+  <section class="panel">
+  <h2>Public display</h2>
+  <p class="hint">Turn a fund's progress off to hide its amount, progress bar, and status lines on the public page. The fund card and its Give button stay, and gifts keep counting in the background, so turning it back on shows the up-to-date total. Changes appear on the public page within a few seconds.</p>
+  <div class="by-row">
+    <label>Changed by
+      <input id="displayBy" maxlength="80" placeholder="Your initials">
+    </label>
+  </div>
+  <div class="toggles" id="fundToggles"></div>
+  <p id="displayMsg" role="status" aria-live="polite"></p>
   </section>
 
   <section class="panel">
@@ -193,6 +219,7 @@
       $('fund').innerHTML = data.funds.map((f) => `<option value="${esc(f.id)}">${esc(f.name)}</option>`).join('');
     }
     fundNames = Object.fromEntries(data.funds.map((f) => [f.id, f.name]));
+    renderToggles(data.funds);
 
     const c = data.campaign;
     $('mode').textContent = `${c.livemode ? 'Live mode' : 'Test mode'}. Campaign window: ${easternLabel(c.start)} to ${easternLabel(c.end)}.`;
@@ -225,6 +252,51 @@
       </tr>`;
     }).join('') || '<tr><td colspan="9">No gifts yet.</td></tr>';
   }
+
+  const FUND_COLORS = { fund_a: '#EE7331', fund_b: '#1A8DA9', fund_c: '#C0629A' };
+  function renderToggles(funds) {
+    $('fundToggles').innerHTML = funds.map((f) => `
+      <div class="toggle-row">
+        <span class="name"><span class="dot" style="background:${FUND_COLORS[f.id] || 'var(--gray3)'}"></span>${esc(f.name)}</span>
+        <label class="switch">
+          <input type="checkbox" role="switch" data-fund="${esc(f.id)}" ${f.show_progress ? 'checked' : ''}
+                 aria-label="Show progress for the ${esc(f.name)}">
+          <span>${f.show_progress ? 'Progress shown' : 'Progress hidden'}</span>
+        </label>
+        <span class="meta">${f.settings_updated_by ? `Last changed by ${esc(f.settings_updated_by)} on ${esc(easternLabel(f.settings_updated_at))}` : 'Shown by default'}</span>
+      </div>`).join('');
+  }
+
+  $('fundToggles').addEventListener('change', async (e) => {
+    const box = e.target.closest('input[data-fund]');
+    if (!box) return;
+    const msg = $('displayMsg');
+    const who = $('displayBy').value.trim();
+    if (!who) {
+      box.checked = !box.checked;
+      msg.textContent = 'Enter your initials in "Changed by" first.';
+      msg.className = 'err';
+      $('displayBy').focus();
+      return;
+    }
+    box.disabled = true;
+    const show = box.checked;
+    const res = await fetch(`/admin/api/funds/${encodeURIComponent(box.dataset.fund)}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ show_progress: show, changed_by: who }),
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      box.checked = !show;
+      box.disabled = false;
+      msg.textContent = out.error || 'Setting was not saved.';
+      msg.className = 'err';
+      return;
+    }
+    msg.textContent = `${fundNames[box.dataset.fund]}: progress ${show ? 'shown' : 'hidden'} on the public page.`;
+    msg.className = '';
+    load();
+  });
 
   async function loadLog() {
     const res = await fetch('/admin/api/campaign/log', { cache: 'no-store' });
