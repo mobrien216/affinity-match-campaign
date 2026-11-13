@@ -77,6 +77,22 @@ CREATE TABLE IF NOT EXISTS campaign_settings_log (
   changed_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Per-fund display settings, edited at /admin.
+CREATE TABLE IF NOT EXISTS fund_settings (
+  fund_id        TEXT PRIMARY KEY,
+  show_progress  BOOLEAN NOT NULL DEFAULT true,
+  updated_by     TEXT,
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS fund_settings_log (
+  id             SERIAL PRIMARY KEY,
+  fund_id        TEXT NOT NULL,
+  show_progress  BOOLEAN NOT NULL,
+  changed_by     TEXT NOT NULL,
+  changed_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS stripe_events (
   id          TEXT PRIMARY KEY,
   type        TEXT NOT NULL,
@@ -90,6 +106,14 @@ let totalsCache = { at: 0, body: null };
 const invalidateTotals = () => { totalsCache = { at: 0, body: null }; };
 
 // ---------- Campaign window (cached; cleared when edited in /admin) ----------
+let fundSettingsCache = null;
+async function getFundSettings() {
+  if (fundSettingsCache) return fundSettingsCache;
+  const { rows } = await pool.query('SELECT fund_id, show_progress, updated_by, updated_at FROM fund_settings');
+  fundSettingsCache = Object.fromEntries(rows.map((r) => [r.fund_id, r]));
+  return fundSettingsCache;
+}
+
 let campaignCache = null;
 async function getCampaign() {
   if (campaignCache) return campaignCache;
@@ -210,7 +234,7 @@ app.get('/api/totals', async (req, res) => {
   try {
     if (totalsCache.body && Date.now() - totalsCache.at < 15000) return res.json(totalsCache.body);
     const campaign = await getCampaign();
-
+    const settings = await getFundSettings();
     const { rows } = await pool.query(
       `SELECT fund_id,
               COALESCE(SUM(amount_cents - refunded_cents), 0)::bigint AS raised_cents,
@@ -238,12 +262,12 @@ app.get('/api/totals', async (req, res) => {
       funds: FUNDS.map((f) => {
         const raised = Number(byFund[f.id] ? byFund[f.id].raised_cents : 0);
         const matched = Math.min(raised, GOAL_CENTS);
+        const show = settings[f.id] ? settings[f.id].show_progress : true;
+        const base = { id: f.id, name: f.name, color: f.color, blurb: f.blurb, give_url: f.giveUrl, show_progress: show };
+        // When progress is hidden, the public API doesn't send the numbers at all.
+        if (!show) return base;
         return {
-          id: f.id,
-          name: f.name,
-          color: f.color,
-          blurb: f.blurb,
-          give_url: f.giveUrl,
+          ...base,
           raised_cents: raised,
           matched_cents: matched,
           over_goal_cents: Math.max(0, raised - GOAL_CENTS),
@@ -300,8 +324,15 @@ app.get('/admin/api/gifts', async (req, res) => {
     [LIVEMODE]
   );
   const campaign = await getCampaign();
+  const settings = await getFundSettings();
   res.set('Cache-Control', 'no-store').json({
-    funds: FUNDS.map((f) => ({ id: f.id, name: f.name })),
+    funds: FUNDS.map((f) => ({
+      id: f.id,
+      name: f.name,
+      show_progress: settings[f.id] ? settings[f.id].show_progress : true,
+      settings_updated_by: settings[f.id] ? settings[f.id].updated_by : null,
+      settings_updated_at: settings[f.id] ? settings[f.id].updated_at : null,
+    })),
     campaign: {
       start: campaign.start.toISOString(),
       end: campaign.end ? campaign.end.toISOString() : null,
@@ -382,6 +413,40 @@ app.put('/admin/api/campaign', express.json({ limit: '10kb' }), async (req, res)
   res.json({ ok: true });
 });
 
+// Show or hide a fund's progress (amount, bar, and status lines) on the public page.
+app.put('/admin/api/funds/:id', express.json({ limit: '10kb' }), async (req, res) => {
+  const fund = fundById(req.params.id);
+  if (!fund) return res.status(404).json({ error: 'Unknown fund.' });
+  const { show_progress, changed_by } = req.body || {};
+  if (typeof show_progress !== 'boolean') return res.status(400).json({ error: 'show_progress must be true or false.' });
+  const who = String(changed_by || '').trim().slice(0, 80);
+  if (!who) return res.status(400).json({ error: 'Enter your name or initials first.' });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `UPDATE fund_settings SET show_progress = $1, updated_by = $2, updated_at = now() WHERE fund_id = $3`,
+      [show_progress, who, fund.id]
+    );
+    await client.query(
+      `INSERT INTO fund_settings_log (fund_id, show_progress, changed_by) VALUES ($1, $2, $3)`,
+      [fund.id, show_progress, who]
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Fund setting update failed:', err);
+    return res.status(500).json({ error: 'Setting was not saved. Try again.' });
+  } finally {
+    client.release();
+  }
+  fundSettingsCache = null;
+  invalidateTotals();
+  console.log(`${fund.id} progress ${show_progress ? 'shown' : 'hidden'} by ${who}`);
+  res.json({ ok: true });
+});
+
 app.get('/admin/api/campaign/log', async (req, res) => {
   const { rows } = await pool.query(
     'SELECT old_start, old_end, new_start, new_end, changed_by, changed_at FROM campaign_settings_log ORDER BY changed_at DESC LIMIT 50'
@@ -401,6 +466,9 @@ app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] })
      VALUES (1, $1, $2, 'initial setup') ON CONFLICT (id) DO NOTHING RETURNING id`,
     [ENV_START || new Date(), ENV_END]
   );
+  for (const f of FUNDS) {
+    await pool.query('INSERT INTO fund_settings (fund_id) VALUES ($1) ON CONFLICT (fund_id) DO NOTHING', [f.id]);
+  }
   const c = await getCampaign();
   console.log(`Campaign window${seeded.rowCount ? ' (seeded from env)' : ''}: ${c.start.toISOString()} to ${c.end ? c.end.toISOString() : 'no end'}`);
   const port = process.env.PORT || 3000;
