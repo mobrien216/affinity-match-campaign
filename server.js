@@ -282,15 +282,19 @@ app.get('/api/totals', async (req, res) => {
         const st = settings[f.id] || {};
         const goal = st.match_goal_cents || GOAL_CENTS;
         const matched = Math.min(raised, goal);
-        return {
+        const base = {
           id: f.id,
           name: f.name,
           color: f.color,
           blurb: f.blurb,
           give_url: f.giveUrl,
-          // false hides only the progress bar; the amounts and status lines still show.
           show_progress: st.show_progress !== false,
           goal_cents: goal,
+        };
+        // Progress hidden in /admin: the public feed sends the match goal but no totals.
+        if (!base.show_progress) return base;
+        return {
+          ...base,
           raised_cents: raised,
           matched_cents: matched,
           over_goal_cents: Math.max(0, raised - goal),
@@ -439,7 +443,8 @@ app.put('/admin/api/campaign', express.json({ limit: '10kb' }), wrap(async (req,
   res.json({ ok: true });
 }));
 
-// Change a fund's display and match settings. Body may include show_progress (boolean)
+// Change a fund's display and match settings. Body may include show_progress (boolean: show or hide
+// the amount raised, progress bar, and status lines)
 // and/or match_goal (dollars). Each change is logged with who made it.
 app.put('/admin/api/funds/:id', express.json({ limit: '10kb' }), wrap(async (req, res) => {
   const fund = fundById(req.params.id);
